@@ -3,11 +3,13 @@
   "short_name": "eConomy",
   "description": "Tu registro personal de ingresos y gastos",
   "start_url": ".",
+  "scope": ".",
   "display": "standalone",
   "background_color": "#15120E",
   "theme_color": "#15120E",
   "icons": [
-    { "src": "/icon-192.png", "type": "image/png", "sizes": "192x192" },
-    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512" }
+    { "src": "icon-192.png", "type": "image/png", "sizes": "192x192" },
+    { "src": "icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" },
+    { "src": "icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
   ]
 }
