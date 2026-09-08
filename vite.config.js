@@ -7,5 +7,5 @@ import react from "@vitejs/plugin-react";
 // page repo), set it to "/" instead.
 export default defineConfig({
   plugins: [react()],
-  base: "/gestor-gastos/",
+  base: "/eConomy/",
 });
