@@ -1,0 +1,12 @@
+{
+  "name": "eConomy",
+  "short_name": "eConomy",
+  "description": "Tu registro personal de ingresos y gastos",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#15120E",
+  "theme_color": "#15120E",
+  "icons": [
+    { "src": "/icon.svg", "type": "image/svg+xml", "sizes": "any" }
+  ]
+}
