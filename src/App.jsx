@@ -5,14 +5,6 @@ import {
 } from "recharts";
 import { supabase } from "./supabaseClient";
 
-// Clave gratuita de Twelve Data (precios de acciones, ETF y cripto) para la
-// pestana Patrimonio. A diferencia de la clave de Supabase, esta no tiene
-// una capa de seguridad tipo RLS detras: cualquiera que la vea en el codigo
-// podria usarla y consumir parte de la cuota gratuita diaria (800/dia). Para
-// un uso personal el riesgo es bajo; si algun dia se agota la cuota sin
-// motivo, se puede regenerar la clave en twelvedata.com.
-const TWELVE_DATA_KEY = "f246ef132582489ab829aa9047b61f25";
-
 const LIGHT_PALETTE = {
   cover: "#F7F5F0",
   coverSoft: "#FFFFFF",
@@ -72,17 +64,6 @@ function capMonths(rows, year, hasData) {
 }
 
 function todayISO() { return new Date().toISOString().slice(0, 10); }
-// Lista de meses "YYYY-MM" desde startMonth (incluido) hasta endMonth (excluido).
-function monthsBetween(startMonth, endMonth) {
-  const months = [];
-  let [y, m] = startMonth.split("-").map(Number);
-  while (`${y}-${String(m).padStart(2, "0")}` < endMonth) {
-    months.push(`${y}-${String(m).padStart(2, "0")}`);
-    m += 1;
-    if (m > 12) { m = 1; y += 1; }
-  }
-  return months;
-}
 // Parses a number typed by the user, accepting both "," and "." as decimal separator
 // (and tolerating the other one used as a thousands separator), e.g. "1.234,56", "1,234.56", "18,20", "18.20".
 function parseDecimal(input) {
@@ -238,41 +219,13 @@ export default function App() {
   const [loadError, setLoadError] = useState(false);
   const [activeTab, setActiveTab] = useState("registro");
 
-  // ---------- Patrimonio ----------
+  // ---------- Patrimonio (100% manual: cuentas y posiciones se añaden y
+  // actualizan a mano desde "activos manuales"; nada se rastrea via API) ----------
   const [manualAssets, setManualAssets] = useState([]);
-  const [holdings, setHoldings] = useState([]);
-  const [netWorthHistory, setNetWorthHistory] = useState([]);
-  const [priceMap, setPriceMap] = useState({});
-  const [openPriceEur, setOpenPriceEur] = useState({});
   const [netWorthLoaded, setNetWorthLoaded] = useState(false);
-  const [pricesLoading, setPricesLoading] = useState(false);
   const [netWorthError, setNetWorthError] = useState("");
-  const [historicalError, setHistoricalError] = useState("");
   const [addAssetModalOpen, setAddAssetModalOpen] = useState(false);
   const [assetForm, setAssetForm] = useState({ name: "", value: "", date: todayISO(), category: "Cuenta Corriente", isInvestment: false });
-  const [addHoldingModalOpen, setAddHoldingModalOpen] = useState(false);
-  const [holdingView, setHoldingView] = useState("acumulado");
-  const [editingHoldingId, setEditingHoldingId] = useState(null);
-  const [realizedGains, setRealizedGains] = useState([]);
-  const [closeModalHolding, setCloseModalHolding] = useState(null);
-  const [closeForm, setCloseForm] = useState({ gain: "", closeDate: todayISO(), notes: "" });
-  const [editingRealizedGain, setEditingRealizedGain] = useState(null);
-  const [realizedEditForm, setRealizedEditForm] = useState({ symbol: "", quantity: "", gain: "", closeDate: todayISO(), notes: "" });
-  const [patrimonioView, setPatrimonioView] = useState("detalle");
-  const [openPositionsExpanded, setOpenPositionsExpanded] = useState(true);
-  const [closedPositionsExpanded, setClosedPositionsExpanded] = useState(false);
-  const [historicalPnL, setHistoricalPnL] = useState({});
-  const [historicalValue, setHistoricalValue] = useState({});
-  const [historicalLoading, setHistoricalLoading] = useState(false);
-  const [historicalLoaded, setHistoricalLoaded] = useState(false);
-  const [holdingForm, setHoldingForm] = useState({ symbol: "", quantity: "", kind: "stock", openPrice: "", openDate: todayISO(), commission: "", finnhubSymbol: "" });
-  const [symbolResults, setSymbolResults] = useState([]);
-  const [finnhubResults, setFinnhubResults] = useState([]);
-  const [finnhubSearching, setFinnhubSearching] = useState(false);
-  const [finnhubPickedName, setFinnhubPickedName] = useState("");
-  const [symbolSearching, setSymbolSearching] = useState(false);
-  const [symbolPickedName, setSymbolPickedName] = useState("");
-  const [expandedSymbols, setExpandedSymbols] = useState({});
   const [menuOpen, setMenuOpen] = useState(false);
 
   const [type, setType] = useState("expense");
@@ -510,523 +463,18 @@ export default function App() {
     }
   }
 
-  // ---------- Patrimonio: carga, precios, y mutaciones ----------
+  // ---------- Patrimonio: carga y mutaciones (100% manual) ----------
   async function loadNetWorthData() {
     try {
-      const [assetsRes, holdingsRes, historyRes, realizedRes] = await Promise.all([
-        supabase.from("manual_assets").select("*").order("name"),
-        supabase.from("holdings").select("*").order("symbol"),
-        supabase.from("networth_snapshots").select("*").order("date", { ascending: true }),
-        supabase.from("realized_gains").select("*").order("close_date", { ascending: true }),
-      ]);
+      const assetsRes = await supabase.from("manual_assets").select("*").order("name");
       if (assetsRes.error) throw assetsRes.error;
-      if (holdingsRes.error) throw holdingsRes.error;
-      if (historyRes.error) throw historyRes.error;
-      if (realizedRes.error) throw realizedRes.error;
       setManualAssets((assetsRes.data || []).map((r) => ({ id: r.id, name: r.name, value: Number(r.value), date: r.date, category: r.category || "Cuenta Corriente", isInvestment: !!r.is_investment })));
-      setHoldings((holdingsRes.data || []).map((r) => ({
-        id: r.id, symbol: r.symbol, quantity: Number(r.quantity), kind: r.kind,
-        openPrice: r.open_price != null ? Number(r.open_price) : null,
-        openDate: r.open_date || null,
-        commission: r.commission != null ? Number(r.commission) : 0,
-        finnhubSymbol: r.finnhub_symbol || "",
-      })));
-      setNetWorthHistory((historyRes.data || []).map((r) => ({ date: r.date, total: Number(r.total) })));
-      setRealizedGains((realizedRes.data || []).map((r) => ({
-        id: r.id, symbol: r.symbol, kind: r.kind, quantity: Number(r.quantity),
-        openPrice: r.open_price != null ? Number(r.open_price) : null,
-        openDate: r.open_date || null, closeDate: r.close_date,
-        commission: Number(r.commission || 0), gain: Number(r.gain), notes: r.notes || "",
-      })));
       setNetWorthError("");
     } catch (e) {
       console.error("Error cargando patrimonio:", e);
       setNetWorthError(e.message || "No se pudieron cargar los datos de patrimonio.");
     } finally {
       setNetWorthLoaded(true);
-    }
-  }
-
-  async function searchSymbols(query) {
-    if (!query || query.trim().length < 2) return [];
-    try {
-      const res = await fetch(`https://api.twelvedata.com/symbol_search?symbol=${encodeURIComponent(query.trim())}&outputsize=8&apikey=${TWELVE_DATA_KEY}`);
-      const data = await res.json();
-      return data.data || [];
-    } catch (e) {
-      console.error("Error buscando simbolos:", e);
-      return [];
-    }
-  }
-
-  function kindFromInstrumentType(type) {
-    const t = (type || "").toLowerCase();
-    if (t.includes("crypto") || t.includes("digital currency")) return "crypto";
-    if (t.includes("etf") || t.includes("fund")) return "etf";
-    return "stock";
-  }
-
-  useEffect(() => {
-    if (!addHoldingModalOpen) { setSymbolResults([]); return; }
-    const query = holdingForm.symbol;
-    if (!query || query.trim().length < 2 || query.trim() === symbolPickedName) { setSymbolResults([]); return; }
-    const timer = setTimeout(async () => {
-      setSymbolSearching(true);
-      const results = await searchSymbols(query);
-      setSymbolResults(results);
-      setSymbolSearching(false);
-    }, 350);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [holdingForm.symbol, addHoldingModalOpen]);
-
-  function pickSymbolResult(r) {
-    setHoldingForm({ ...holdingForm, symbol: r.symbol, kind: kindFromInstrumentType(r.instrument_type) });
-    setSymbolPickedName(r.symbol);
-    setSymbolResults([]);
-  }
-
-  async function searchFinnhubSymbols(query) {
-    if (!query || query.trim().length < 2) return [];
-    try {
-      const target = `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query.trim())}&quotesCount=8&newsCount=0`;
-      const res = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(target)}`);
-      const data = await res.json();
-      return (data.quotes || []).filter((q) => q.symbol).slice(0, 8);
-    } catch (e) {
-      console.error("Error buscando en Yahoo Finance:", e);
-      return [];
-    }
-  }
-
-  useEffect(() => {
-    if (!addHoldingModalOpen) { setFinnhubResults([]); return; }
-    const query = holdingForm.finnhubSymbol;
-    if (!query || query.trim().length < 2 || query.trim() === finnhubPickedName) { setFinnhubResults([]); return; }
-    const timer = setTimeout(async () => {
-      setFinnhubSearching(true);
-      const results = await searchFinnhubSymbols(query);
-      setFinnhubResults(results);
-      setFinnhubSearching(false);
-    }, 350);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [holdingForm.finnhubSymbol, addHoldingModalOpen]);
-
-  function pickFinnhubResult(r) {
-    const baseTicker = r.symbol.split(".")[0];
-    setHoldingForm({
-      ...holdingForm,
-      finnhubSymbol: r.symbol,
-      symbol: holdingForm.symbol.trim() ? holdingForm.symbol : baseTicker,
-    });
-    setFinnhubPickedName(r.symbol);
-    setFinnhubResults([]);
-  }
-
-  async function fetchExchangeRates(currencies) {
-    if (currencies.length === 0) return {};
-    try {
-      const pairs = currencies.map((c) => `${c}/EUR`);
-      const res = await fetch(`https://api.twelvedata.com/exchange_rate?symbol=${encodeURIComponent(pairs.join(","))}&apikey=${TWELVE_DATA_KEY}`);
-      const data = await res.json();
-      const rates = {};
-      if (pairs.length === 1) {
-        const r = parseFloat(data.rate);
-        if (!isNaN(r)) rates[currencies[0]] = r;
-      } else {
-        pairs.forEach((p, i) => {
-          const entry = data[p];
-          const r = entry && parseFloat(entry.rate);
-          if (!isNaN(r)) rates[currencies[i]] = r;
-        });
-      }
-      return rates;
-    } catch (e) {
-      console.error("Error obteniendo tipos de cambio:", e);
-      return {};
-    }
-  }
-
-  async function fetchPrices(symbols) {
-    if (symbols.length === 0) return {};
-    try {
-      const res = await fetch(`https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbols.join(","))}&apikey=${TWELVE_DATA_KEY}`);
-      const data = await res.json();
-      const map = {};
-      const errors = [];
-      const parseEntry = (entry, symbolForError) => {
-        if (!entry) return null;
-        if (entry.status === "error" || entry.code) {
-          errors.push(`${symbolForError}: ${entry.message || "error desconocido"}`);
-          return null;
-        }
-        const price = parseFloat(entry.close);
-        if (isNaN(price)) return null;
-        const dayChange = parseFloat(entry.change);
-        const dayPercentChange = parseFloat(entry.percent_change);
-        return {
-          price,
-          dayChange: isNaN(dayChange) ? null : dayChange,
-          dayPercentChange: isNaN(dayPercentChange) ? null : dayPercentChange,
-          currency: (entry.currency || "").toUpperCase() || null,
-        };
-      };
-      if (symbols.length === 1) {
-        const parsed = parseEntry(data, symbols[0]);
-        if (parsed) map[symbols[0]] = parsed;
-      } else {
-        symbols.forEach((s) => {
-          const parsed = parseEntry(data[s], s);
-          if (parsed) map[s] = parsed;
-        });
-      }
-      if (errors.length > 0) {
-        setNetWorthError(`Twelve Data: ${errors.join(" · ")}`);
-      }
-
-      // Los precios llegan en la divisa nativa del instrumento (ej. USD
-      // para acciones de EEUU). Los convertimos todos a EUR para que el
-      // total y las ganancias sean correctos.
-      const foreignCurrencies = [...new Set(Object.values(map).map((q) => q.currency).filter((c) => c && c !== "EUR"))];
-      if (foreignCurrencies.length > 0) {
-        const rates = await fetchExchangeRates(foreignCurrencies);
-        Object.values(map).forEach((q) => {
-          if (q.currency && q.currency !== "EUR" && rates[q.currency]) {
-            q.price = q.price * rates[q.currency];
-            if (q.dayChange != null) q.dayChange = q.dayChange * rates[q.currency];
-          }
-        });
-      }
-
-      return map;
-    } catch (e) {
-      console.error("Error obteniendo precios:", e);
-      setNetWorthError(`Fallo de red pidiendo precios a Twelve Data: ${e.message}`);
-      return {};
-    }
-  }
-
-  async function fetchHistoricalRate(currency, date) {
-    try {
-      const res = await fetch(`https://api.twelvedata.com/time_series?symbol=${currency}/EUR&interval=1day&start_date=${date}&end_date=${date}&apikey=${TWELVE_DATA_KEY}`);
-      const data = await res.json();
-      const v = data.values && data.values[0] && parseFloat(data.values[0].close);
-      if (!isNaN(v)) return v;
-      // Fin de semana / festivo sin cotizacion forex: probamos un rango de
-      // unos dias hacia atras y nos quedamos con el mas reciente.
-      const d = new Date(date + "T00:00:00");
-      d.setDate(d.getDate() - 5);
-      const start = d.toISOString().slice(0, 10);
-      const res2 = await fetch(`https://api.twelvedata.com/time_series?symbol=${currency}/EUR&interval=1day&start_date=${start}&end_date=${date}&apikey=${TWELVE_DATA_KEY}`);
-      const data2 = await res2.json();
-      const v2 = data2.values && data2.values[0] && parseFloat(data2.values[0].close);
-      return isNaN(v2) ? null : v2;
-    } catch (e) {
-      console.error("Error obteniendo cambio historico:", e);
-      return null;
-    }
-  }
-
-  async function fetchMonthlySeries(symbol, startDate) {
-    try {
-      const res = await fetch(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=1month&start_date=${startDate}&end_date=${todayISO()}&outputsize=500&apikey=${TWELVE_DATA_KEY}`);
-      const data = await res.json();
-      if (!data.values) {
-        if (data.status === "error" || data.code) {
-          setHistoricalError(`Twelve Data (${symbol}): ${data.message || "error desconocido al pedir historico"}`);
-        }
-        return [];
-      }
-      return data.values
-        .map((v) => ({ month: v.datetime.slice(0, 7), close: parseFloat(v.close) }))
-        .filter((v) => !isNaN(v.close));
-    } catch (e) {
-      console.error("Error obteniendo historico mensual:", e);
-      setHistoricalError(`Fallo de red pidiendo historico de ${symbol}: ${e.message}`);
-      return [];
-    }
-  }
-
-  async function computeHistoricalPnL(currentHoldings, closedPositions) {
-    const withOpen = currentHoldings.filter((h) => h.openPrice != null && !isNaN(h.openPrice) && h.openDate);
-    const monthlyGain = {};
-    const monthlyValue = {};
-    const fxSeriesCache = {};
-    const nowMonth = todayISO().slice(0, 7);
-    for (const h of withOpen) {
-      const openMonth = h.openDate.slice(0, 7);
-      const openEur = openPriceEur[h.id]; // puede ser null si fallo el cambio historico; aun asi calculamos el VALOR
-      const { values: priceSeries, currency: seriesCurrency } = await fetchHoldingMonthlySeries(h);
-      const coveredMonths = new Set();
-      if (priceSeries.length > 0) {
-        const currency = (priceMap[h.symbol] && priceMap[h.symbol].currency) || seriesCurrency;
-        let fxByMonth = null;
-        if (currency && currency !== "EUR") {
-          if (!(currency in fxSeriesCache)) {
-            const fxSeries = await fetchMonthlySeries(`${currency}/EUR`, h.openDate);
-            const map = {};
-            fxSeries.forEach((v) => { map[v.month] = v.close; });
-            fxSeriesCache[currency] = map;
-          }
-          fxByMonth = fxSeriesCache[currency];
-        }
-        priceSeries.forEach(({ month, close }) => {
-          if (month < openMonth) return;
-          let priceEur = close;
-          if (fxByMonth) {
-            const rate = fxByMonth[month] || Object.values(fxByMonth)[0];
-            if (rate) priceEur = close * rate;
-          }
-          monthlyValue[month] = (monthlyValue[month] || 0) + priceEur * h.quantity;
-          if (openEur != null) {
-            const gain = (priceEur - openEur) * h.quantity;
-            monthlyGain[month] = (monthlyGain[month] || 0) + gain;
-            coveredMonths.add(month);
-          }
-        });
-      }
-      // Relleno de huecos: Twelve Data puede no tener historico en absoluto
-      // para este simbolo (frecuente en ETFs europeos que solo localizamos
-      // via Yahoo Finance para el precio actual), o solo cubrir parte del
-      // rango desde que se abrio la posicion. Sin esto, esos meses quedaban
-      // en blanco y el grafico daba la sensacion de tener en cuenta solo el
-      // mes actual / lo ya cerrado. Para cualquier mes entre la apertura y
-      // hoy que no haya quedado cubierto con un precio real, interpolamos
-      // linealmente su beneficio/perdida latente entre 0 (mes de apertura) y
-      // su ganancia/perdida actual conocida hoy (si no hay cambio historico
-      // fiable, usamos el precio de apertura tal cual como aproximacion).
-      if (openMonth < nowMonth && priceMap[h.symbol]) {
-        const effectiveOpenEur = openEur != null ? openEur : h.openPrice;
-        const currentGain = (priceMap[h.symbol].price - effectiveOpenEur) * h.quantity - (h.commission || 0);
-        const allMonths = monthsBetween(openMonth, nowMonth);
-        const span = allMonths.length;
-        allMonths.forEach((month, idx) => {
-          if (coveredMonths.has(month)) return;
-          const fraction = (idx + 1) / (span + 1);
-          monthlyGain[month] = (monthlyGain[month] || 0) + currentGain * fraction;
-        });
-      }
-    }
-    // Posiciones YA CERRADAS: mientras estuvieron abiertas tambien generaron
-    // beneficio/perdida latente mes a mes, y esa trayectoria no debe
-    // desaparecer del acumulado solo porque hoy ya esten cerradas (si no, el
-    // grafico daria un salto brusco justo en el mes de cierre). Intentamos
-    // reconstruirla con precios historicos REALES (Twelve Data primero,
-    // Yahoo Finance como respaldo) igual que con las posiciones abiertas; la
-    // interpolacion lineal solo se usa como ultimo recurso si ninguna de las
-    // dos tiene datos para ese simbolo.
-    for (const r of (closedPositions || [])) {
-      if (r.openDate == null || r.openPrice == null || !r.closeDate) continue;
-      const openMonth = r.openDate.slice(0, 7);
-      const closeMonth = r.closeDate.slice(0, 7);
-      if (openMonth >= closeMonth) continue;
-      const months = monthsBetween(openMonth, closeMonth); // excluye el mes de cierre: ese ya cuenta como realizado
-      const coveredMonths = new Set();
-
-      let twelveSeries = await fetchMonthlySeries(r.symbol, r.openDate);
-      twelveSeries = twelveSeries.filter((v) => v.month < closeMonth);
-      let currency = null;
-      let realSeries = twelveSeries;
-      if (twelveSeries.length > 0) {
-        const quotes = await fetchPrices([r.symbol]);
-        currency = quotes[r.symbol] && quotes[r.symbol].currency;
-      } else {
-        const yahoo = await fetchYahooMonthlySeries(r.symbol, r.openDate);
-        realSeries = yahoo.values.filter((v) => v.month < closeMonth);
-        currency = yahoo.currency;
-      }
-      if (realSeries.length > 0) {
-        const openRate = currency && currency !== "EUR" ? await fetchHistoricalRate(currency, r.openDate) : 1;
-        const openEurReal = openRate != null ? r.openPrice * openRate : null;
-        if (openEurReal != null) {
-          let fxByMonth = null;
-          if (currency && currency !== "EUR") {
-            const fxSeries = await fetchMonthlySeries(`${currency}/EUR`, r.openDate);
-            const map = {};
-            fxSeries.forEach((v) => { map[v.month] = v.close; });
-            fxByMonth = map;
-          }
-          realSeries.forEach(({ month, close }) => {
-            if (month < openMonth) return;
-            let priceEur = close;
-            if (fxByMonth) {
-              const rate = fxByMonth[month] || Object.values(fxByMonth)[0];
-              if (rate) priceEur = close * rate;
-            }
-            const gain = (priceEur - openEurReal) * r.quantity;
-            monthlyGain[month] = (monthlyGain[month] || 0) + gain;
-            coveredMonths.add(month);
-          });
-        }
-      }
-      // Ultimo recurso: para cualquier mes de la vida de esta posicion que
-      // no haya quedado cubierto con un precio real, interpolamos
-      // linealmente entre 0 (mes de apertura) y la ganancia/perdida final
-      // registrada al cerrarla.
-      const missing = months.filter((m) => !coveredMonths.has(m));
-      if (missing.length) {
-        const span = months.length;
-        missing.forEach((month) => {
-          const idx = months.indexOf(month);
-          const fraction = (idx + 1) / (span + 1);
-          monthlyGain[month] = (monthlyGain[month] || 0) + r.gain * fraction;
-        });
-      }
-    }
-    return { gainByMonth: monthlyGain, valueByMonth: monthlyValue };
-  }
-
-  async function fetchYahooQuote(yahooSymbol) {
-    try {
-      const target = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}`;
-      const res = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(target)}`);
-      const data = await res.json();
-      const result = data && data.chart && data.chart.result && data.chart.result[0];
-      if (!result || !result.meta || result.meta.regularMarketPrice == null) {
-        setNetWorthError(`Yahoo Finance tampoco encontro precio para "${yahooSymbol}". Prueba otro formato de simbolo (ej. con o sin sufijo de pais) o pasa este a activo manual.`);
-        return null;
-      }
-      const meta = result.meta;
-      const price = meta.regularMarketPrice;
-      const prevClose = meta.previousClose != null ? meta.previousClose : meta.chartPreviousClose;
-      const dayChange = prevClose != null ? price - prevClose : null;
-      const dayPercentChange = prevClose ? (dayChange / prevClose) * 100 : null;
-      return {
-        price,
-        dayChange,
-        dayPercentChange,
-        currency: (meta.currency || "EUR").toUpperCase(),
-      };
-    } catch (e) {
-      console.error("Error obteniendo precio de Yahoo Finance:", e);
-      setNetWorthError(`Fallo pidiendo precio a Yahoo Finance para "${yahooSymbol}": ${e.message}`);
-      return null;
-    }
-  }
-
-  // Precio historico mensual REAL desde Yahoo Finance (no una estimacion),
-  // para simbolos que Twelve Data no cubre (frecuente en ETFs/ETPs europeos).
-  // El mismo endpoint de Yahoo que usamos para el precio actual admite un
-  // rango de fechas e intervalo, asi que pedimos velas mensuales desde la
-  // fecha de apertura de la posicion hasta hoy.
-  async function fetchYahooMonthlySeries(yahooSymbol, startDate) {
-    try {
-      const period1 = Math.floor(new Date(startDate + "T00:00:00Z").getTime() / 1000);
-      const period2 = Math.floor(Date.now() / 1000);
-      const target = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?period1=${period1}&period2=${period2}&interval=1mo`;
-      const res = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(target)}`);
-      const data = await res.json();
-      const result = data && data.chart && data.chart.result && data.chart.result[0];
-      const quote = result && result.indicators && result.indicators.quote && result.indicators.quote[0];
-      if (!result || !result.timestamp || !quote || !quote.close) {
-        const reason = (data && data.chart && data.chart.error && data.chart.error.description) || "sin datos";
-        setHistoricalError(`Yahoo Finance (${yahooSymbol}): no hay historico mensual disponible (${reason}). Esta posicion se aproximara con una estimacion lineal.`);
-        return { values: [], currency: null };
-      }
-      const currency = ((result.meta && result.meta.currency) || "").toUpperCase() || null;
-      const byMonth = {};
-      result.timestamp.forEach((ts, i) => {
-        const close = quote.close[i];
-        if (close == null || isNaN(close)) return;
-        const month = new Date(ts * 1000).toISOString().slice(0, 7);
-        byMonth[month] = close; // si hay mas de una vela en el mismo mes, nos quedamos con la ultima
-      });
-      const values = Object.entries(byMonth)
-        .map(([month, close]) => ({ month, close }))
-        .sort((a, b) => (a.month < b.month ? -1 : 1));
-      return { values, currency };
-    } catch (e) {
-      console.error("Error obteniendo historico mensual de Yahoo Finance:", e);
-      setHistoricalError(`Fallo pidiendo historico a Yahoo Finance para "${yahooSymbol}": ${e.message}. Esta posicion se aproximara con una estimacion lineal.`);
-      return { values: [], currency: null };
-    }
-  }
-
-  // Devuelve el historico mensual real de un valor, probando primero Twelve
-  // Data (salvo que el usuario haya marcado explicitamente un simbolo
-  // alternativo de Yahoo Finance para el, señal de que Twelve Data no es de
-  // fiar para ese ticker) y cayendo a Yahoo Finance si no hay datos.
-  async function fetchHoldingMonthlySeries(h) {
-    const hasYahooOverride = !!h.finnhubSymbol;
-    if (!hasYahooOverride) {
-      const twelveValues = await fetchMonthlySeries(h.symbol, h.openDate);
-      if (twelveValues.length > 0) {
-        return { values: twelveValues, currency: priceMap[h.symbol] && priceMap[h.symbol].currency };
-      }
-    }
-    const yahooSymbol = h.finnhubSymbol || h.symbol;
-    return fetchYahooMonthlySeries(yahooSymbol, h.openDate);
-  }
-
-  async function refreshNetWorth(currentHoldings, currentAssets) {
-    setPricesLoading(true);
-    setNetWorthError("");
-    try {
-      // Si el usuario ha puesto un simbolo alternativo (Yahoo Finance) para
-      // una posicion, es una senal explicita de que Twelve Data no sirve
-      // para ese valor — ni lo intentamos ahi, para evitar que un ticker
-      // ambiguo (ej. "IUSN" sin bolsa) traiga por error el precio de OTRO
-      // instrumento distinto que casualmente se llama igual.
-      const symbolsWithFinnhubOverride = new Set(
-        currentHoldings.filter((h) => h.finnhubSymbol).map((h) => h.symbol)
-      );
-      const symbols = [...new Set(currentHoldings.map((h) => h.symbol))];
-      const symbolsForTwelveData = symbols.filter((s) => !symbolsWithFinnhubOverride.has(s));
-      const prices = await fetchPrices(symbolsForTwelveData);
-
-      // Para los simbolos con respaldo (o los que Twelve Data no pudo dar),
-      // probamos Yahoo Finance con el mismo simbolo.
-      const symbolsNeedingFallback = symbols.filter((s) => !prices[s]);
-      for (const s of symbolsNeedingFallback) {
-        const holdingWithFallback = currentHoldings.find((h) => h.symbol === s && h.finnhubSymbol);
-        if (!holdingWithFallback) continue;
-        const altSymbol = holdingWithFallback.finnhubSymbol;
-        const yahooPrice = await fetchYahooQuote(altSymbol);
-        if (yahooPrice) prices[s] = yahooPrice;
-      }
-
-      setPriceMap(prices);
-
-      // Convertimos el precio de apertura de cada posicion a EUR usando el
-      // tipo de cambio del dia en que se abrio (no el de hoy), para que la
-      // ganancia/perdida coincida con lo que calcula tu broker.
-      const rateCache = {};
-      const openEur = {};
-      for (const h of currentHoldings) {
-        if (h.openPrice == null || isNaN(h.openPrice)) continue;
-        const currency = prices[h.symbol] && prices[h.symbol].currency;
-        if (!currency || currency === "EUR" || !h.openDate) {
-          openEur[h.id] = h.openPrice;
-          continue;
-        }
-        const cacheKey = `${currency}_${h.openDate}`;
-        if (!(cacheKey in rateCache)) {
-          rateCache[cacheKey] = await fetchHistoricalRate(currency, h.openDate);
-        }
-        const rate = rateCache[cacheKey];
-        openEur[h.id] = rate != null ? h.openPrice * rate : null;
-      }
-      setOpenPriceEur(openEur);
-
-      const holdingsTotal = currentHoldings.reduce((sum, h) => sum + (prices[h.symbol] ? prices[h.symbol].price : 0) * h.quantity, 0);
-      const manualTotal = latestManualAssets(currentAssets).reduce((sum, a) => sum + a.value, 0);
-      const total = holdingsTotal + manualTotal;
-      const today = todayISO();
-      const { error } = await supabase.from("networth_snapshots").upsert({
-        id: `${userId}_${today}`, user_id: userId, date: today,
-        total, manual_total: manualTotal, holdings_total: holdingsTotal,
-      }, { onConflict: "user_id,date" });
-      if (error) throw error;
-      setNetWorthHistory((prev) => {
-        const withoutToday = prev.filter((r) => r.date !== today);
-        return [...withoutToday, { date: today, total }].sort((a, b) => (a.date < b.date ? -1 : 1));
-      });
-    } catch (e) {
-      console.error("Error actualizando patrimonio:", e);
-      setNetWorthError(e.message || "No se pudo actualizar el patrimonio.");
-    } finally {
-      setPricesLoading(false);
     }
   }
 
@@ -1041,8 +489,6 @@ export default function App() {
       setManualAssets(nextAssets);
       setAssetForm({ name: "", value: "", date: todayISO(), category: "Cuenta Corriente", isInvestment: false });
       setAddAssetModalOpen(false);
-      refreshNetWorth(holdings, nextAssets);
-      setHistoricalLoaded(false);
     } catch (e) {
       setNetWorthError(e.message || "No se pudo anadir el activo.");
     }
@@ -1056,216 +502,10 @@ export default function App() {
       if (error) throw error;
       const nextAssets = manualAssets.filter((a) => !idsToDelete.includes(a.id));
       setManualAssets(nextAssets);
-      refreshNetWorth(holdings, nextAssets);
-      setHistoricalLoaded(false);
     } catch (e) {
       setNetWorthError(e.message || "No se pudo borrar el activo.");
     }
   }
-
-  async function saveHolding() {
-    const quantity = parseDecimal(holdingForm.quantity);
-    const symbol = holdingForm.symbol.trim().toUpperCase();
-    if (!symbol) { setNetWorthError("Falta el simbolo."); return; }
-    if (isNaN(quantity) || quantity <= 0) { setNetWorthError("La cantidad debe ser un numero mayor que cero."); return; }
-    setNetWorthError("");
-    const openPriceVal = holdingForm.openPrice === "" ? null : parseDecimal(holdingForm.openPrice);
-    const commissionVal = holdingForm.commission === "" ? 0 : parseDecimal(holdingForm.commission);
-    const payload = {
-      symbol, quantity, kind: holdingForm.kind,
-      openPrice: isNaN(openPriceVal) ? null : openPriceVal,
-      openDate: holdingForm.openDate || null,
-      commission: isNaN(commissionVal) ? 0 : commissionVal,
-      finnhubSymbol: holdingForm.finnhubSymbol.trim() || "",
-    };
-    try {
-      if (editingHoldingId) {
-        const { error } = await supabase.from("holdings").update({
-          symbol: payload.symbol, quantity: payload.quantity, kind: payload.kind,
-          open_price: payload.openPrice, open_date: payload.openDate, commission: payload.commission,
-          finnhub_symbol: payload.finnhubSymbol || null,
-        }).eq("id", editingHoldingId);
-        if (error) throw error;
-        const nextHoldings = holdings.map((h) => (h.id === editingHoldingId ? { id: editingHoldingId, ...payload } : h));
-        setHoldings(nextHoldings);
-        refreshNetWorth(nextHoldings, manualAssets);
-      setHistoricalLoaded(false);
-      } else {
-        const holding = { id: uid(), ...payload };
-        const { error } = await supabase.from("holdings").insert({
-          id: holding.id, user_id: userId, symbol: holding.symbol, quantity: holding.quantity, kind: holding.kind,
-          open_price: holding.openPrice, open_date: holding.openDate, commission: holding.commission,
-          finnhub_symbol: holding.finnhubSymbol || null,
-        });
-        if (error) throw error;
-        const nextHoldings = [...holdings, holding];
-        setHoldings(nextHoldings);
-        refreshNetWorth(nextHoldings, manualAssets);
-      setHistoricalLoaded(false);
-      }
-      setHoldingForm({ symbol: "", quantity: "", kind: "stock", openPrice: "", openDate: todayISO(), commission: "", finnhubSymbol: "" });
-      setEditingHoldingId(null);
-      setAddHoldingModalOpen(false);
-    } catch (e) {
-      setNetWorthError(e.message || "No se pudo guardar la posicion. Revisa que el simbolo sea correcto (ej. AAPL, BTC/USD).");
-    }
-  }
-
-  function startEditHolding(h) {
-    setEditingHoldingId(h.id);
-    setHoldingForm({
-      symbol: h.symbol,
-      quantity: String(h.quantity),
-      kind: h.kind,
-      openPrice: h.openPrice != null ? String(h.openPrice) : "",
-      openDate: h.openDate || todayISO(),
-      commission: h.commission ? String(h.commission) : "",
-      finnhubSymbol: h.finnhubSymbol || "",
-    });
-    setSymbolPickedName(h.symbol);
-    setSymbolResults([]);
-    setFinnhubPickedName(h.finnhubSymbol || "");
-    setFinnhubResults([]);
-    setAddHoldingModalOpen(true);
-  }
-
-  async function removeHolding(id) {
-    try {
-      const { error } = await supabase.from("holdings").delete().eq("id", id);
-      if (error) throw error;
-      const nextHoldings = holdings.filter((h) => h.id !== id);
-      setHoldings(nextHoldings);
-      refreshNetWorth(nextHoldings, manualAssets);
-      setHistoricalLoaded(false);
-    } catch (e) {
-      setNetWorthError(e.message || "No se pudo borrar la posicion.");
-    }
-  }
-
-  function startClosePosition(h) {
-    const quote = priceMap[h.symbol];
-    const price = quote ? quote.price : null;
-    const openEur = openPriceEur[h.id];
-    const suggested = openEur != null && price != null ? (price - openEur) * h.quantity - (h.commission || 0) : 0;
-    setCloseForm({ gain: suggested.toFixed(2), closeDate: todayISO(), notes: "" });
-    setCloseModalHolding(h);
-  }
-
-  async function confirmClosePosition() {
-    if (!closeModalHolding) return;
-    const h = closeModalHolding;
-    const gain = parseDecimal(closeForm.gain);
-    if (isNaN(gain)) return;
-    const record = {
-      id: uid(), symbol: h.symbol, kind: h.kind, quantity: h.quantity,
-      openPrice: h.openPrice, openDate: h.openDate,
-      closeDate: closeForm.closeDate || todayISO(),
-      commission: h.commission || 0, gain,
-      notes: closeForm.notes.trim(),
-    };
-    try {
-      const { error: insError } = await supabase.from("realized_gains").insert({
-        id: record.id, user_id: userId, symbol: record.symbol, kind: record.kind, quantity: record.quantity,
-        open_price: record.openPrice, open_date: record.openDate, close_date: record.closeDate,
-        commission: record.commission, gain: record.gain, notes: record.notes,
-      });
-      if (insError) throw insError;
-      const { error: delError } = await supabase.from("holdings").delete().eq("id", h.id);
-      if (delError) throw delError;
-      setRealizedGains((prev) => [...prev, record].sort((a, b) => (a.closeDate < b.closeDate ? -1 : 1)));
-      const nextHoldings = holdings.filter((x) => x.id !== h.id);
-      setHoldings(nextHoldings);
-      setCloseModalHolding(null);
-      refreshNetWorth(nextHoldings, manualAssets);
-      setHistoricalLoaded(false);
-    } catch (e) {
-      setNetWorthError(e.message || "No se pudo cerrar la posicion.");
-    }
-  }
-
-  function startEditRealized(r) {
-    setEditingRealizedGain(r);
-    setRealizedEditForm({
-      symbol: r.symbol,
-      quantity: String(r.quantity),
-      gain: String(r.gain),
-      closeDate: r.closeDate,
-      notes: r.notes || "",
-    });
-  }
-
-  async function saveRealizedEdit() {
-    if (!editingRealizedGain) return;
-    const quantity = parseDecimal(realizedEditForm.quantity);
-    const gain = parseDecimal(realizedEditForm.gain);
-    if (!realizedEditForm.symbol.trim() || isNaN(quantity) || isNaN(gain)) {
-      setNetWorthError("Revisa el simbolo, la cantidad y el beneficio/perdida.");
-      return;
-    }
-    const closeDate = realizedEditForm.closeDate || todayISO();
-    try {
-      const { error } = await supabase.from("realized_gains").update({
-        symbol: realizedEditForm.symbol.trim(),
-        quantity, gain, close_date: closeDate, notes: realizedEditForm.notes.trim(),
-      }).eq("id", editingRealizedGain.id);
-      if (error) throw error;
-      setRealizedGains((prev) => prev
-        .map((r) => (r.id === editingRealizedGain.id
-          ? { ...r, symbol: realizedEditForm.symbol.trim(), quantity, gain, closeDate, notes: realizedEditForm.notes.trim() }
-          : r))
-        .sort((a, b) => (a.closeDate < b.closeDate ? -1 : 1)));
-      setEditingRealizedGain(null);
-      setHistoricalLoaded(false);
-    } catch (e) {
-      setNetWorthError(e.message || "No se pudo actualizar la posicion cerrada.");
-    }
-  }
-
-  async function removeRealizedGain(id) {
-    try {
-      const { error } = await supabase.from("realized_gains").delete().eq("id", id);
-      if (error) throw error;
-      setRealizedGains((prev) => prev.filter((r) => r.id !== id));
-      setHistoricalLoaded(false);
-    } catch (e) {
-      setNetWorthError(e.message || "No se pudo borrar la posicion cerrada.");
-    }
-  }
-
-  useEffect(() => {
-    if ((activeTab !== "patrimonio" && activeTab !== "evolucion") || !userId || netWorthLoaded) return;
-    (async () => {
-      await loadNetWorthData();
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, userId]);
-
-  useEffect(() => {
-    if (!netWorthLoaded) return;
-    refreshNetWorth(holdings, manualAssets);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [netWorthLoaded]);
-
-  async function loadHistoricalPnL() {
-    setHistoricalLoading(true);
-    setHistoricalError("");
-    try {
-      const { gainByMonth, valueByMonth } = await computeHistoricalPnL(holdings, realizedGains);
-      setHistoricalPnL(gainByMonth);
-      setHistoricalValue(valueByMonth);
-    } catch (e) {
-      console.error("Error reconstruyendo historico:", e);
-    } finally {
-      setHistoricalLoading(false);
-      setHistoricalLoaded(true);
-    }
-  }
-
-  useEffect(() => {
-    if (activeTab !== "evolucion" || !netWorthLoaded || pricesLoading || historicalLoaded || historicalLoading) return;
-    loadHistoricalPnL();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, netWorthLoaded, pricesLoading, historicalLoaded]);
 
   const visibleManualAssets = useMemo(() => latestManualAssets(manualAssets).sort((a, b) => a.name.localeCompare(b.name, "es")), [manualAssets]);
   const manualTotal = visibleManualAssets.reduce((sum, a) => sum + a.value, 0);
@@ -1296,62 +536,49 @@ export default function App() {
       });
   }, [visibleManualAssets, manualHistoryByMonth]);
   const manualInvestmentsGain = manualInvestments.reduce((sum, m) => sum + m.gain, 0);
-
-  const holdingsTotal = holdings.reduce((sum, h) => sum + (priceMap[h.symbol] ? priceMap[h.symbol].price : 0) * h.quantity, 0);
-  const holdingsWithGain = holdings.filter((h) => openPriceEur[h.id] != null && priceMap[h.symbol] != null);
-  const totalGain = holdingsWithGain.reduce((sum, h) => sum + (priceMap[h.symbol].price - openPriceEur[h.id]) * h.quantity - (h.commission || 0), 0) + manualInvestmentsGain;
-  const totalDayChange = holdings.reduce((sum, h) => {
-    const q = priceMap[h.symbol];
-    return sum + (q && q.dayChange != null ? q.dayChange * h.quantity : 0);
-  }, 0);
-  const netWorthTotal = manualTotal + holdingsTotal;
-  const netWorthTicks = niceTicks(0, netWorthHistory.reduce((m, r) => Math.max(m, r.total), 0), 6);
-
-  const groupedHoldings = useMemo(() => {
-    const map = {};
-    holdings.forEach((h) => {
-      if (!map[h.symbol]) map[h.symbol] = [];
-      map[h.symbol].push(h);
-    });
-    return Object.entries(map)
-      .map(([symbol, lots]) => ({ symbol, lots }))
-      .sort((a, b) => a.symbol.localeCompare(b.symbol));
-  }, [holdings]);
+  const manualInvestmentsTotal = visibleManualAssets.filter((a) => a.isInvestment).reduce((sum, a) => sum + a.value, 0);
+  const manualAccountsTotal = manualTotal - manualInvestmentsTotal;
+  const totalGain = manualInvestmentsGain;
+  const netWorthTotal = manualTotal;
+  const netWorthTicks = niceTicks(0, manualTotal, 6);
   const currentMonthKey = `${CURRENT_YEAR}-${String(TODAY.getMonth() + 1).padStart(2, "0")}`;
 
   const [pnlYear, setPnlYear] = useState(CURRENT_YEAR);
 
+  // Reconstruye el patrimonio mes a mes tomando, para cada activo manual, su
+  // ULTIMA lectura conocida hasta ese mes (asi si un mes no tiene una
+  // actualizacion nueva, se sigue contando con el ultimo valor registrado).
   const reconstructedNetWorth = useMemo(() => {
     const months = new Set([
-      ...Object.keys(historicalValue),
       ...Object.values(manualHistoryByMonth).flatMap((list) => list.map((a) => a.date.slice(0, 7))),
       currentMonthKey,
     ]);
     const sortedMonths = Array.from(months).sort();
     return sortedMonths.map((month) => {
-      let manualTotalAtMonth = 0;
+      let cuentasAtMonth = 0;
+      let inversionesAtMonth = 0;
       Object.values(manualHistoryByMonth).forEach((list) => {
         let latest = null;
         for (const entry of list) {
           if (entry.date.slice(0, 7) <= month) latest = entry;
         }
-        if (latest) manualTotalAtMonth += latest.value;
+        if (latest) {
+          if (latest.isInvestment) inversionesAtMonth += latest.value;
+          else cuentasAtMonth += latest.value;
+        }
       });
-      const holdingsValueAtMonth = month === currentMonthKey ? holdingsTotal : (historicalValue[month] || 0);
-      return { label: month, total: manualTotalAtMonth + holdingsValueAtMonth, manual: manualTotalAtMonth, holdings: holdingsValueAtMonth };
+      return { label: month, total: cuentasAtMonth + inversionesAtMonth, manual: cuentasAtMonth, holdings: inversionesAtMonth };
     });
-  }, [historicalValue, manualHistoryByMonth, currentMonthKey, holdingsTotal]);
+  }, [manualHistoryByMonth, currentMonthKey]);
 
   const [netWorthFilter, setNetWorthFilter] = useState("todo");
   const netWorthValueKey = netWorthFilter === "inversiones" ? "holdings" : netWorthFilter === "cuentas" ? "manual" : "total";
 
   const pnlYearsAvailable = useMemo(() => {
     const years = new Set([CURRENT_YEAR]);
-    realizedGains.forEach((r) => years.add(r.closeDate.slice(0, 4)));
-    Object.keys(historicalPnL).forEach((m) => years.add(m.slice(0, 4)));
     reconstructedNetWorth.forEach((r) => years.add(r.label.slice(0, 4)));
     return Array.from(years).sort().reverse();
-  }, [realizedGains, historicalPnL, reconstructedNetWorth]);
+  }, [reconstructedNetWorth]);
 
   function lastKnownNetWorth(uptoMonth, key) {
     let val = 0;
@@ -1384,24 +611,12 @@ export default function App() {
     return capMonths(rows, pnlYear, (r) => r.value !== 0);
   }, [pnlYear, netWorthValueKey, reconstructedNetWorth, pnlYearsAvailable]);
 
-  const netWorthChartData = reconstructedNetWorth.length > 1
-    ? netWorthRows
-    : netWorthHistory.map((r) => ({ label: r.date.slice(5), value: r.total }));
+  const netWorthChartData = netWorthRows;
   const netWorthChartTicks = niceTicks(0, netWorthChartData.reduce((m, r) => Math.max(m, r.value), 0), 6);
 
-  const pnlRealizedByMonth = useMemo(() => {
-    const map = {};
-    realizedGains.forEach((r) => {
-      const key = r.closeDate.slice(0, 7);
-      map[key] = (map[key] || 0) + r.gain;
-    });
-    return map;
-  }, [realizedGains]);
-
-  // Serie maestra mensual: para cada mes con datos, el impacto ACUMULADO
-  // total (realizado hasta ese mes + valor de mercado de lo abierto en ese
-  // mes). A partir de ahi derivamos tanto el acumulado como el neto (la
-  // diferencia respecto al mes anterior) sin mezclar ambos conceptos.
+  // Serie maestra mensual de beneficio/perdida: para cada activo manual
+  // marcado como "inversion", comparamos su ULTIMA lectura conocida hasta
+  // ese mes contra su coste inicial (primer valor registrado).
   function valueAtMonth(history, month) {
     let latest = null;
     for (const entry of history) {
@@ -1415,9 +630,9 @@ export default function App() {
     const investmentMonths = visibleManualAssets
       .filter((a) => a.isInvestment)
       .flatMap((a) => (manualHistoryByMonth[a.name.trim().toLowerCase()] || []).map((e) => e.date.slice(0, 7)));
-    const set = new Set([...Object.keys(pnlRealizedByMonth), ...Object.keys(historicalPnL), ...investmentMonths, currentMonthKey]);
+    const set = new Set([...investmentMonths, currentMonthKey]);
     return Array.from(set).sort();
-  }, [pnlRealizedByMonth, historicalPnL, currentMonthKey, visibleManualAssets, manualHistoryByMonth]);
+  }, [currentMonthKey, visibleManualAssets, manualHistoryByMonth]);
 
   const manualInvestmentGainByMonth = useMemo(() => {
     const map = {};
@@ -1438,15 +653,12 @@ export default function App() {
   }, [visibleManualAssets, manualHistoryByMonth, allPnlMonthsSorted]);
 
   const cumulativeByMonth = useMemo(() => {
-    let realizedRunning = 0;
     const map = {};
     allPnlMonthsSorted.forEach((month) => {
-      realizedRunning += pnlRealizedByMonth[month] || 0;
-      const unrealized = month === currentMonthKey ? totalGain : (historicalPnL[month] || 0) + (manualInvestmentGainByMonth[month] || 0);
-      map[month] = realizedRunning + unrealized;
+      map[month] = manualInvestmentGainByMonth[month] || 0;
     });
     return map;
-  }, [allPnlMonthsSorted, pnlRealizedByMonth, historicalPnL, manualInvestmentGainByMonth, currentMonthKey, totalGain]);
+  }, [allPnlMonthsSorted, manualInvestmentGainByMonth]);
 
   const netByMonth = useMemo(() => {
     const map = {};
@@ -1501,8 +713,6 @@ export default function App() {
     pnlRows.reduce((m, r) => Math.max(m, r.cumulative), 0),
     6
   );
-  const realizedTotal = realizedGains.reduce((s, r) => s + r.gain, 0);
-
   function exportBackup() {
     const payload = transactions.map((t) => ({
       id: t.id,
@@ -1580,9 +790,7 @@ export default function App() {
     setDataLoaded(false);
     setActiveTab("registro");
     setLoginUser(""); setLoginPass(""); setLoginPass2("");
-    setManualAssets([]); setHoldings([]); setNetWorthHistory([]); setPriceMap({}); setOpenPriceEur({}); setRealizedGains([]); setNetWorthLoaded(false);
-    setHistoricalPnL({}); setHistoricalValue({}); setHistoricalLoaded(false); setHistoricalError("");
-    setExpandedSymbols({});
+    setManualAssets([]); setNetWorthLoaded(false);
   }
 
   async function addTransaction(e) {
@@ -2365,45 +1573,23 @@ export default function App() {
                     {netWorthLoaded ? formatMoneyRound(netWorthTotal) : "..."}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  className="submit-btn"
-                  onClick={() => refreshNetWorth(holdings, manualAssets)}
-                  disabled={pricesLoading || !netWorthLoaded}
-                >
-                  {pricesLoading ? "Actualizando..." : "Actualizar precios"}
-                </button>
               </div>
               <div style={{ display: "flex", gap: 24, marginTop: 16, flexWrap: "wrap" }}>
                 <div>
-                  <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "0 0 2px" }}>Manual</p>
-                  <p style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: PALETTE.ink, margin: 0 }}>{formatMoneyRound(manualTotal)}</p>
+                  <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "0 0 2px" }}>Cuentas</p>
+                  <p style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: PALETTE.ink, margin: 0 }}>{formatMoneyRound(manualAccountsTotal)}</p>
                 </div>
-                <div>
-                  <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "0 0 2px" }}>Mercado (acciones/ETF/cripto)</p>
-                  <p style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: PALETTE.ink, margin: 0 }}>{formatMoneyRound(holdingsTotal)}</p>
-                </div>
-                {holdingsWithGain.length > 0 && (
+                {manualInvestments.length > 0 && (
                   <div>
-                    <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "0 0 2px" }}>Beneficio / perdida (abiertas)</p>
+                    <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "0 0 2px" }}>Inversiones</p>
+                    <p style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: PALETTE.ink, margin: 0 }}>{formatMoneyRound(manualInvestmentsTotal)}</p>
+                  </div>
+                )}
+                {manualInvestments.length > 0 && (
+                  <div>
+                    <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "0 0 2px" }}>Beneficio / perdida (inversiones)</p>
                     <p style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: totalGain >= 0 ? PALETTE.income : PALETTE.expense, margin: 0 }}>
                       {totalGain >= 0 ? "+" : ""}{formatMoneyRound(totalGain)}
-                    </p>
-                  </div>
-                )}
-                {holdings.length > 0 && (
-                  <div>
-                    <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "0 0 2px" }}>Hoy</p>
-                    <p style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: totalDayChange >= 0 ? PALETTE.income : PALETTE.expense, margin: 0 }}>
-                      {totalDayChange >= 0 ? "+" : ""}{formatMoneyRound(totalDayChange)}
-                    </p>
-                  </div>
-                )}
-                {realizedGains.length > 0 && (
-                  <div>
-                    <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "0 0 2px" }}>Realizado (cerradas)</p>
-                    <p style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: realizedTotal >= 0 ? PALETTE.income : PALETTE.expense, margin: 0 }}>
-                      {realizedTotal >= 0 ? "+" : ""}{formatMoneyRound(realizedTotal)}
                     </p>
                   </div>
                 )}
@@ -2454,178 +1640,6 @@ export default function App() {
               )}
             </section>
 
-            <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "20px 24px", marginBottom: 20 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: openPositionsExpanded ? 14 : 0, flexWrap: "wrap", gap: 10 }}>
-                <button type="button" onClick={() => setOpenPositionsExpanded((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-                  <span style={{ color: PALETTE.inkSoft, fontSize: 12, transform: openPositionsExpanded ? "rotate(90deg)" : "none", transition: "transform 0.12s ease", display: "inline-block" }}>{"\u203A"}</span>
-                  <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: 0 }}>Acciones, ETF y cripto abiertas ({holdings.length})</p>
-                </button>
-                {openPositionsExpanded && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    {holdings.length > 0 && (
-                      <div style={{ display: "flex" }}>
-                        <button type="button" className={"type-toggle" + (holdingView === "acumulado" ? " active-income" : "")} style={{ borderRadius: "3px 0 0 3px", fontSize: 12, padding: "5px 12px" }} onClick={() => setHoldingView("acumulado")}>Acumulado</button>
-                        <button type="button" className={"type-toggle" + (holdingView === "hoy" ? " active-income" : "")} style={{ borderRadius: "0 3px 3px 0", borderLeft: "none", fontSize: 12, padding: "5px 12px" }} onClick={() => setHoldingView("hoy")}>Hoy</button>
-                      </div>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => { setEditingHoldingId(null); setHoldingForm({ symbol: "", quantity: "", kind: "stock", openPrice: "", openDate: todayISO(), commission: "", finnhubSymbol: "" }); setSymbolPickedName(""); setSymbolResults([]); setFinnhubPickedName(""); setFinnhubResults([]); setAddHoldingModalOpen(true); }}
-                      style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${PALETTE.rule}`, borderRadius: 14, background: "none", color: PALETTE.gold, fontSize: 12, cursor: "pointer", padding: "4px 10px 4px 6px" }}
-                    >
-                      <span style={{ width: 18, height: 18, borderRadius: "50%", border: `1px solid ${PALETTE.gold}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, lineHeight: 1 }}>+</span>
-                      Anadir posicion
-                    </button>
-                  </div>
-                )}
-              </div>
-              {openPositionsExpanded && (
-                !netWorthLoaded ? (
-                  <p style={{ fontSize: 13, color: PALETTE.inkSoft }}>Cargando...</p>
-                ) : holdings.length === 0 ? (
-                  <p style={{ fontSize: 13, color: PALETTE.inkSoft, margin: 0 }}>Sin posiciones todavia. Anade el simbolo (ej. AAPL, BTC/USD) y la cantidad.</p>
-                ) : (
-                  groupedHoldings.map((group) => {
-                    const { symbol, lots } = group;
-                    const quote = priceMap[symbol];
-                    const price = quote ? quote.price : null;
-                    const totalQuantity = lots.reduce((s, h) => s + h.quantity, 0);
-                    const currentValue = price != null ? price * totalQuantity : null;
-
-                    const lotsWithOpen = lots.filter((h) => h.openPrice != null && !isNaN(h.openPrice) && openPriceEur[h.id] != null);
-                    const hasOpen = lotsWithOpen.length > 0 && price != null;
-                    const accGain = hasOpen
-                      ? lotsWithOpen.reduce((s, h) => s + (price - openPriceEur[h.id]) * h.quantity - (h.commission || 0), 0)
-                      : null;
-                    const costBasis = lotsWithOpen.reduce((s, h) => s + openPriceEur[h.id] * h.quantity, 0);
-                    const accGainPct = hasOpen && costBasis > 0 ? (accGain / costBasis) * 100 : null;
-
-                    const dayGain = quote && quote.dayChange != null ? quote.dayChange * totalQuantity : null;
-                    const dayGainPct = quote ? quote.dayPercentChange : null;
-
-                    const shownGain = holdingView === "hoy" ? dayGain : accGain;
-                    const shownPct = holdingView === "hoy" ? dayGainPct : accGainPct;
-                    const showRow = holdingView === "hoy" ? quote != null : hasOpen;
-                    const isMulti = lots.length > 1;
-                    const isExpanded = !!expandedSymbols[symbol];
-
-                    const renderLotDetail = (h) => {
-                      const openEur = openPriceEur[h.id];
-                      const hasRawOpen = h.openPrice != null && !isNaN(h.openPrice);
-                      const lotHasOpen = hasRawOpen && openEur != null;
-                      const lotGain = lotHasOpen && price != null ? (price - openEur) * h.quantity - (h.commission || 0) : null;
-                      return (
-                        <div key={h.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0 8px 18px", borderBottom: `1px solid ${PALETTE.rule}`, gap: 10 }}>
-                          <div>
-                            <span style={{ fontSize: 13, color: PALETTE.ink }}>{h.quantity} uds</span>
-                            {hasRawOpen && (
-                              <div style={{ fontSize: 11, color: PALETTE.inkSoft, marginTop: 2 }}>
-                                Abierta a {h.openPrice.toFixed(2)}{quote && quote.currency ? ` ${quote.currency}` : ""}
-                                {openEur != null && quote && quote.currency && quote.currency !== "EUR" ? ` (${formatMoney(openEur)})` : ""}
-                                {h.openDate ? ` el ${formatDate(h.openDate)}` : ""}
-                                {h.commission ? ` · comision ${formatMoney(h.commission)}` : ""}
-                                {hasRawOpen && !lotHasOpen && " · cambio no disponible"}
-                              </div>
-                            )}
-                          </div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            {lotGain != null && (
-                              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: lotGain >= 0 ? PALETTE.income : PALETTE.expense }}>
-                                {lotGain >= 0 ? "+" : ""}{formatMoney(lotGain)}
-                              </span>
-                            )}
-                            <button onClick={() => startEditHolding(h)} aria-label="Editar" style={{ background: "none", border: `1px solid ${PALETTE.rule}`, borderRadius: 3, cursor: "pointer", color: PALETTE.inkSoft, fontSize: 11, padding: "4px 8px" }}>Editar</button>
-                            <button onClick={() => startClosePosition(h)} aria-label="Cerrar posicion" style={{ background: "none", border: `1px solid ${PALETTE.rule}`, borderRadius: 3, cursor: "pointer", color: PALETTE.inkSoft, fontSize: 11, padding: "4px 8px" }}>Cerrar</button>
-                            <button onClick={() => removeHolding(h.id)} aria-label="Eliminar" style={{ background: "none", border: "none", cursor: "pointer", color: PALETTE.inkSoft, fontSize: 16 }}>x</button>
-                          </div>
-                        </div>
-                      );
-                    };
-
-                    return (
-                      <div key={symbol}>
-                        <div
-                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderBottom: isMulti && isExpanded ? "none" : `1px solid ${PALETTE.rule}`, gap: 10, cursor: isMulti ? "pointer" : "default" }}
-                          onClick={isMulti ? () => setExpandedSymbols({ ...expandedSymbols, [symbol]: !isExpanded }) : undefined}
-                        >
-                          <div>
-                            <span style={{ fontSize: 14, color: PALETTE.ink }}>
-                              {isMulti && <span style={{ display: "inline-block", marginRight: 6, color: PALETTE.inkSoft, transform: isExpanded ? "rotate(90deg)" : "none", transition: "transform 0.12s ease" }}>{"\u203A"}</span>}
-                              {symbol}
-                            </span>
-                            <span style={{ fontSize: 12, color: PALETTE.inkSoft, marginLeft: 8 }}>{totalQuantity} uds{isMulti ? ` · ${lots.length} compras` : ""}</span>
-                            {!isMulti && lots[0].openPrice != null && !isNaN(lots[0].openPrice) && (
-                              <div style={{ fontSize: 11, color: PALETTE.inkSoft, marginTop: 2 }}>
-                                Abierta a {lots[0].openPrice.toFixed(2)}{quote && quote.currency ? ` ${quote.currency}` : ""}
-                                {openPriceEur[lots[0].id] != null && quote && quote.currency && quote.currency !== "EUR" ? ` (${formatMoney(openPriceEur[lots[0].id])})` : ""}
-                                {lots[0].openDate ? ` el ${formatDate(lots[0].openDate)}` : ""}
-                                {lots[0].commission ? ` · comision ${formatMoney(lots[0].commission)}` : ""}
-                              </div>
-                            )}
-                          </div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <div style={{ textAlign: "right" }}>
-                              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: PALETTE.ink }}>
-                                {currentValue != null ? formatMoney(currentValue) : "..."}
-                              </div>
-                              {showRow && shownGain != null && (
-                                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: shownGain >= 0 ? PALETTE.income : PALETTE.expense }}>
-                                  {shownGain >= 0 ? "+" : ""}{formatMoney(shownGain)}
-                                  {shownPct != null && ` (${shownPct >= 0 ? "+" : ""}${shownPct.toFixed(2)}%)`}
-                                </div>
-                              )}
-                            </div>
-                            {!isMulti && (
-                              <>
-                                <button onClick={(e) => { e.stopPropagation(); startEditHolding(lots[0]); }} aria-label="Editar" style={{ background: "none", border: `1px solid ${PALETTE.rule}`, borderRadius: 3, cursor: "pointer", color: PALETTE.inkSoft, fontSize: 11, padding: "4px 8px" }}>Editar</button>
-                                <button onClick={(e) => { e.stopPropagation(); startClosePosition(lots[0]); }} aria-label="Cerrar posicion" style={{ background: "none", border: `1px solid ${PALETTE.rule}`, borderRadius: 3, cursor: "pointer", color: PALETTE.inkSoft, fontSize: 11, padding: "4px 8px" }}>Cerrar</button>
-                                <button onClick={(e) => { e.stopPropagation(); removeHolding(lots[0].id); }} aria-label="Eliminar" style={{ background: "none", border: "none", cursor: "pointer", color: PALETTE.inkSoft, fontSize: 16 }}>x</button>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                        {isMulti && isExpanded && (
-                          <div style={{ borderBottom: `1px solid ${PALETTE.rule}` }}>
-                            {lots.map((h) => renderLotDetail(h))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })
-                )
-              )}
-            </section>
-
-            <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "20px 24px" }}>
-              <button type="button" onClick={() => setClosedPositionsExpanded((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, background: "none", border: "none", cursor: "pointer", padding: 0, marginBottom: closedPositionsExpanded ? 14 : 0 }}>
-                <span style={{ color: PALETTE.inkSoft, fontSize: 12, transform: closedPositionsExpanded ? "rotate(90deg)" : "none", transition: "transform 0.12s ease", display: "inline-block" }}>{"\u203A"}</span>
-                <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: 0 }}>Posiciones cerradas ({realizedGains.length})</p>
-              </button>
-              {closedPositionsExpanded && (
-                realizedGains.length === 0 ? (
-                  <p style={{ fontSize: 13, color: PALETTE.inkSoft, margin: 0 }}>Todavia no has cerrado ninguna posicion.</p>
-                ) : (
-                  realizedGains.slice().reverse().map((r) => (
-                    <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderBottom: `1px solid ${PALETTE.rule}`, gap: 8 }}>
-                      <div>
-                        <span style={{ fontSize: 14, color: PALETTE.ink }}>{r.symbol}</span>
-                        <span style={{ fontSize: 12, color: PALETTE.inkSoft, marginLeft: 8 }}>{r.quantity} uds</span>
-                        <div style={{ fontSize: 11, color: PALETTE.inkSoft, marginTop: 2 }}>
-                          Cerrada el {formatDate(r.closeDate)}{r.notes ? ` · ${r.notes}` : ""}
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: r.gain >= 0 ? PALETTE.income : PALETTE.expense }}>
-                          {r.gain >= 0 ? "+" : ""}{formatMoney(r.gain)}
-                        </span>
-                        <button onClick={() => startEditRealized(r)} aria-label="Editar posicion cerrada" style={{ background: "none", border: `1px solid ${PALETTE.rule}`, borderRadius: 3, cursor: "pointer", color: PALETTE.inkSoft, fontSize: 11, padding: "4px 8px" }}>Editar</button>
-                        <button onClick={() => { if (window.confirm("¿Borrar esta posicion cerrada? Esto tambien recalculara los graficos de evolucion.")) removeRealizedGain(r.id); }} aria-label="Eliminar posicion cerrada" style={{ background: "none", border: "none", cursor: "pointer", color: PALETTE.inkSoft, fontSize: 16 }}>x</button>
-                      </div>
-                    </div>
-                  ))
-                )
-              )}
-            </section>
 
             {addAssetModalOpen && (
               <div onClick={() => setAddAssetModalOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 24 }}>
@@ -2672,7 +1686,7 @@ export default function App() {
                   <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer", background: PALETTE.paperDim, borderRadius: 8, padding: "10px 12px" }}>
                     <input type="checkbox" checked={assetForm.isInvestment} onChange={(e) => setAssetForm({ ...assetForm, isInvestment: e.target.checked })} style={{ marginTop: 2 }} />
                     <span style={{ fontSize: 12, color: PALETTE.inkSoft }}>
-                      Es una inversion (no una cuenta/saldo). El primer valor que guardes se usa como coste inicial, y las actualizaciones posteriores se comparan con el para calcular la ganancia o perdida — se sumara en los graficos de Beneficios junto con tus acciones y cripto.
+                      Es una inversion (acciones, ETF, cripto, fondos...), no una cuenta/saldo. El primer valor que guardes se usa como coste inicial, y cada actualizacion posterior (con la fecha de ese dia) se compara con el para calcular la ganancia o perdida mes a mes en Evolucion Patrimonio.
                     </span>
                   </label>
                   <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
@@ -2683,179 +1697,6 @@ export default function App() {
               </div>
             )}
 
-            {addHoldingModalOpen && (
-              <div onClick={() => { setAddHoldingModalOpen(false); setEditingHoldingId(null); }} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 }}>
-                <div
-                  onClick={(e) => e.stopPropagation()}
-                  style={{
-                    background: PALETTE.paper, borderRadius: "10px 10px 0 0", padding: "20px 20px 16px",
-                    maxWidth: 420, width: "100%", maxHeight: "90vh", overflowY: "auto",
-                    boxShadow: "0 -8px 30px rgba(0,0,0,0.3)", boxSizing: "border-box",
-                  }}
-                >
-                  <div style={{ width: 36, height: 4, borderRadius: 2, background: PALETTE.rule, margin: "0 auto 16px" }} />
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
-                    <p style={{ fontSize: 15, color: PALETTE.ink, margin: 0, fontWeight: 600 }}>{editingHoldingId ? "Editar posicion" : "Nueva posicion"}</p>
-                    <button type="button" onClick={() => { setAddHoldingModalOpen(false); setEditingHoldingId(null); }} aria-label="Cerrar" style={{ background: "none", border: "none", cursor: "pointer", color: PALETTE.inkSoft, fontSize: 18, lineHeight: 1, padding: 2 }}>×</button>
-                  </div>
-                  <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 16px" }}>Simbolo tal cual en el mercado: AAPL, MSFT, VWCE, BTC/USD...</p>
-
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px 12px", marginBottom: 14 }}>
-                    <div style={{ gridColumn: "1 / -1", position: "relative" }}>
-                      <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Simbolo</label>
-                      <input
-                        className="ledger-input"
-                        autoFocus
-                        autoCapitalize="characters"
-                        placeholder="Busca por nombre o simbolo: Apple, BTC..."
-                        value={holdingForm.symbol}
-                        onChange={(e) => { setSymbolPickedName(""); setHoldingForm({ ...holdingForm, symbol: e.target.value }); }}
-                        autoComplete="off"
-                      />
-                      {symbolSearching && (
-                        <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "4px 0 0" }}>Buscando...</p>
-                      )}
-                      {symbolResults.length > 0 && (
-                        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: PALETTE.paper, border: `1px solid ${PALETTE.rule}`, borderRadius: 6, marginTop: 4, maxHeight: 220, overflowY: "auto", zIndex: 60, boxShadow: "0 6px 20px rgba(0,0,0,0.25)" }}>
-                          {symbolResults.map((r, i) => (
-                            <button
-                              key={`${r.symbol}-${i}`}
-                              type="button"
-                              onClick={() => pickSymbolResult(r)}
-                              style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: i < symbolResults.length - 1 ? `1px solid ${PALETTE.rule}` : "none", cursor: "pointer", padding: "9px 12px" }}
-                            >
-                              <div style={{ fontSize: 13, color: PALETTE.ink }}>{r.symbol} <span style={{ color: PALETTE.inkSoft, fontWeight: 400 }}>— {r.instrument_name}</span></div>
-                              <div style={{ fontSize: 11, color: PALETTE.inkSoft, marginTop: 1 }}>{r.exchange}{r.currency ? ` · ${r.currency}` : ""}</div>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Cantidad</label>
-                      <input className="ledger-input" inputMode="decimal" placeholder="Ej. 10" value={holdingForm.quantity} onChange={(e) => setHoldingForm({ ...holdingForm, quantity: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); saveHolding(); } }} />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Tipo</label>
-                      <select className="ledger-select" value={holdingForm.kind} onChange={(e) => setHoldingForm({ ...holdingForm, kind: e.target.value })}>
-                        <option value="stock">Accion</option>
-                        <option value="etf">ETF / Fondo</option>
-                        <option value="crypto">Cripto</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div style={{ background: PALETTE.paperDim, borderRadius: 8, padding: "14px 14px 4px", marginBottom: 14 }}>
-                    <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "0 0 12px" }}>
-                      Opcional — para calcular la ganancia o perdida de posiciones abiertas en el pasado
-                    </p>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px 12px" }}>
-                      <div>
-                        <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Precio de apertura</label>
-                        <input className="ledger-input" inputMode="decimal" placeholder="Por unidad" value={holdingForm.openPrice} onChange={(e) => setHoldingForm({ ...holdingForm, openPrice: e.target.value })} style={{ marginBottom: 12 }} />
-                      </div>
-                      <div>
-                        <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Fecha de apertura</label>
-                        <input className="ledger-input" type="date" value={holdingForm.openDate} onChange={(e) => setHoldingForm({ ...holdingForm, openDate: e.target.value })} style={{ marginBottom: 12 }} />
-                      </div>
-                      <div style={{ gridColumn: "1 / -1" }}>
-                        <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Comision aplicada (EUR)</label>
-                        <input className="ledger-input" inputMode="decimal" placeholder="0,00" value={holdingForm.commission} onChange={(e) => setHoldingForm({ ...holdingForm, commission: e.target.value })} style={{ marginBottom: 12 }} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); saveHolding(); } }} />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div style={{ background: PALETTE.paperDim, borderRadius: 8, padding: "14px 14px 4px", marginBottom: 18 }}>
-                    <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "0 0 12px" }}>
-                      Opcional — si Twelve Data no cubre este mercado (ej. bolsas europeas), busca aqui el equivalente en Yahoo Finance. Solo se usa para el precio actual, no para el historico.
-                    </p>
-                    <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Simbolo alternativo (Yahoo Finance)</label>
-                    <div style={{ position: "relative" }}>
-                      <input
-                        className="ledger-input"
-                        placeholder="Busca por nombre o simbolo: IUSN, Apple..."
-                        value={holdingForm.finnhubSymbol}
-                        onChange={(e) => { setFinnhubPickedName(""); setHoldingForm({ ...holdingForm, finnhubSymbol: e.target.value }); }}
-                        autoComplete="off"
-                        style={{ marginBottom: 12 }}
-                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); saveHolding(); } }}
-                      />
-                      {finnhubSearching && (
-                        <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "-8px 0 8px" }}>Buscando en Yahoo Finance...</p>
-                      )}
-                      {finnhubResults.length > 0 && (
-                        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: PALETTE.paper, border: `1px solid ${PALETTE.rule}`, borderRadius: 6, marginTop: -8, maxHeight: 220, overflowY: "auto", zIndex: 60, boxShadow: "0 6px 20px rgba(0,0,0,0.25)" }}>
-                          {finnhubResults.map((r, i) => (
-                            <button
-                              key={`${r.symbol}-${i}`}
-                              type="button"
-                              onClick={() => pickFinnhubResult(r)}
-                              style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: i < finnhubResults.length - 1 ? `1px solid ${PALETTE.rule}` : "none", cursor: "pointer", padding: "9px 12px" }}
-                            >
-                              <div style={{ fontSize: 13, color: PALETTE.ink }}>{r.symbol} <span style={{ color: PALETTE.inkSoft, fontWeight: 400 }}>— {r.shortname || r.longname || ""}</span></div>
-                              {r.exchDisp && <div style={{ fontSize: 11, color: PALETTE.inkSoft, marginTop: 1 }}>{r.exchDisp}{r.typeDisp ? ` · ${r.typeDisp}` : ""}</div>}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {netWorthError && <p style={{ fontSize: 12, color: PALETTE.expense, margin: "0 0 12px" }}>{netWorthError}</p>}
-
-                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, position: "sticky", bottom: 0, background: PALETTE.paper, paddingTop: 4 }}>
-                    <button type="button" className="pill-btn" onClick={() => { setAddHoldingModalOpen(false); setEditingHoldingId(null); setNetWorthError(""); }}>Cancelar</button>
-                    <button type="button" className="submit-btn" onClick={saveHolding}>{editingHoldingId ? "Guardar" : "Anadir"}</button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {closeModalHolding && (
-              <div onClick={() => setCloseModalHolding(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 24 }}>
-                <div onClick={(e) => e.stopPropagation()} style={{ background: PALETTE.paper, borderRadius: 6, padding: "22px 24px", maxWidth: 340, width: "100%" }}>
-                  <p style={{ fontSize: 13, color: PALETTE.ink, margin: "0 0 4px", fontWeight: 500 }}>Cerrar posicion: {closeModalHolding.symbol}</p>
-                  <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 14px" }}>
-                    El beneficio/perdida se calcula con el precio actual. Si tu broker te da otro numero exacto, cambialo aqui.
-                  </p>
-                  <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Fecha de cierre</label>
-                  <input className="ledger-input" type="date" value={closeForm.closeDate} onChange={(e) => setCloseForm({ ...closeForm, closeDate: e.target.value })} style={{ marginBottom: 12 }} />
-                  <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Beneficio / perdida (EUR)</label>
-                  <input className="ledger-input" value={closeForm.gain} onChange={(e) => setCloseForm({ ...closeForm, gain: e.target.value })} style={{ marginBottom: 12 }} />
-                  <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Notas (opcional)</label>
-                  <input className="ledger-input" placeholder="Ej. Venta parcial" value={closeForm.notes} onChange={(e) => setCloseForm({ ...closeForm, notes: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); confirmClosePosition(); } }} />
-                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
-                    <button type="button" className="pill-btn" onClick={() => setCloseModalHolding(null)}>Cancelar</button>
-                    <button type="button" className="submit-btn" onClick={confirmClosePosition}>Cerrar posicion</button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {editingRealizedGain && (
-              <div onClick={() => setEditingRealizedGain(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 24 }}>
-                <div onClick={(e) => e.stopPropagation()} style={{ background: PALETTE.paper, borderRadius: 6, padding: "22px 24px", maxWidth: 340, width: "100%" }}>
-                  <p style={{ fontSize: 13, color: PALETTE.ink, margin: "0 0 4px", fontWeight: 500 }}>Editar posicion cerrada</p>
-                  <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 14px" }}>
-                    Los cambios recalcularan los graficos de Evolucion Patrimonio.
-                  </p>
-                  <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Simbolo</label>
-                  <input className="ledger-input" value={realizedEditForm.symbol} onChange={(e) => setRealizedEditForm({ ...realizedEditForm, symbol: e.target.value })} style={{ marginBottom: 12 }} />
-                  <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Cantidad</label>
-                  <input className="ledger-input" inputMode="decimal" value={realizedEditForm.quantity} onChange={(e) => setRealizedEditForm({ ...realizedEditForm, quantity: e.target.value })} style={{ marginBottom: 12 }} />
-                  <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Fecha de cierre</label>
-                  <input className="ledger-input" type="date" value={realizedEditForm.closeDate} onChange={(e) => setRealizedEditForm({ ...realizedEditForm, closeDate: e.target.value })} style={{ marginBottom: 12 }} />
-                  <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Beneficio / perdida (EUR)</label>
-                  <input className="ledger-input" inputMode="decimal" value={realizedEditForm.gain} onChange={(e) => setRealizedEditForm({ ...realizedEditForm, gain: e.target.value })} style={{ marginBottom: 12 }} />
-                  <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Notas (opcional)</label>
-                  <input className="ledger-input" placeholder="Ej. Venta parcial" value={realizedEditForm.notes} onChange={(e) => setRealizedEditForm({ ...realizedEditForm, notes: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); saveRealizedEdit(); } }} />
-                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
-                    <button type="button" className="pill-btn" onClick={() => setEditingRealizedGain(null)}>Cancelar</button>
-                    <button type="button" className="submit-btn" onClick={saveRealizedEdit}>Guardar</button>
-                  </div>
-                </div>
-              </div>
-            )}
           </>
         )}
 
@@ -2885,7 +1726,7 @@ export default function App() {
                   </div>
                 </div>
                 <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "0 0 12px" }}>
-                  {pnlYear === "all" ? "Un punto por ano (el ultimo valor conocido)." : "Desglosado mes a mes para ese ano."} Reconstruida con el historial de tus activos manuales y el valor de mercado.
+                  {pnlYear === "all" ? "Un punto por ano (el ultimo valor conocido)." : "Desglosado mes a mes para ese ano."} Reconstruida con la ultima lectura de cada mes de tus activos manuales.
                 </p>
                 <div style={{ width: "100%", height: 220 }}>
                   <ResponsiveContainer>
@@ -2910,11 +1751,9 @@ export default function App() {
                 </select>
               </div>
               <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "0 0 4px" }}>
-                Nunca vuelve a cero: es la suma de todo lo realizado hasta ese momento mas el valor de lo que sigue abierto, reconstruido con precios historicos.
+                Nunca vuelve a cero: es la suma de la ganancia/perdida de tus activos manuales marcados como inversion, mes a mes.
               </p>
-              {historicalLoading && <p style={{ fontSize: 11, color: PALETTE.gold, margin: "0 0 12px" }}>Reconstruyendo historico de precios...</p>}
-              {historicalError && <p style={{ fontSize: 11, color: PALETTE.expense, margin: "0 0 12px" }}>{historicalError}</p>}
-              {!historicalLoading && <div style={{ marginBottom: 12 }} />}
+              <div style={{ marginBottom: 12 }} />
               {pnlRows.every((r) => r.cumulative === 0) ? (
                 <p style={{ fontSize: 13, color: PALETTE.inkSoft, margin: 0 }}>Todavia no hay beneficios o perdidas que mostrar.</p>
               ) : (
