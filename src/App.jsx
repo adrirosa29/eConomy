@@ -3,6 +3,7 @@ import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
+import { createPortal } from "react-dom";
 import { supabase } from "./supabaseClient";
 
 const LIGHT_PALETTE = {
@@ -65,6 +66,13 @@ const MONTHS_SHORT = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "s
 const TODAY = new Date();
 const CURRENT_YEAR = String(TODAY.getFullYear());
 const CURRENT_MONTH_INDEX = TODAY.getMonth();
+const CURRENT_MONTH_KEY = CURRENT_YEAR + "-" + String(CURRENT_MONTH_INDEX + 1).padStart(2, "0");
+// Periodo del Registro: "all", "year:2026" (anio completo) o "2026-11" (mes).
+function inPeriod(period, isoDate) {
+  if (period === "all") return true;
+  if (period.startsWith("year:")) return isoDate.slice(0, 4) === period.slice(5);
+  return isoDate.slice(0, 7) === period;
+}
 
 function capMonths(rows, year, hasData) {
   if (year !== CURRENT_YEAR) return rows;
@@ -276,7 +284,7 @@ export default function App() {
   const [editingTxId, setEditingTxId] = useState(null);
   const skipTypeResetRef = useRef(false);
 
-  const [monthFilter, setMonthFilter] = useState("all");
+  const [monthFilter, setMonthFilter] = useState(CURRENT_MONTH_KEY);
   const [typeFilter, setTypeFilter] = useState("all");
   const [catFilter, setCatFilter] = useState(null);
   const [searchText, setSearchText] = useState("");
@@ -1237,11 +1245,17 @@ export default function App() {
   // ---------- Registro tab derived data ----------
   const monthsAvailable = useMemo(() => {
     const set = new Set(transactions.map((t) => t.date.slice(0, 7)));
+    set.add(CURRENT_MONTH_KEY);
+    return Array.from(set).sort().reverse();
+  }, [transactions]);
+  const registroYears = useMemo(() => {
+    const set = new Set(transactions.map((t) => t.date.slice(0, 4)));
+    set.add(CURRENT_YEAR);
     return Array.from(set).sort().reverse();
   }, [transactions]);
   const filtered = useMemo(() => transactions
     .filter((t) => {
-      if (monthFilter !== "all" && t.date.slice(0, 7) !== monthFilter) return false;
+      if (!inPeriod(monthFilter, t.date)) return false;
       if (typeFilter !== "all" && t.type !== typeFilter) return false;
       if (catFilter && t.category !== catFilter) return false;
       if (searchText.trim()) {
@@ -1257,7 +1271,7 @@ export default function App() {
     const byCat = {};
     const used = new Set();
     transactions.forEach((t) => {
-      if (monthFilter !== "all" && t.date.slice(0, 7) !== monthFilter) return;
+      if (!inPeriod(monthFilter, t.date)) return;
       used.add(t.category);
       if (t.type === "income") income += t.amount;
       else { expense += t.amount; byCat[t.category] = (byCat[t.category] || 0) + t.amount; }
@@ -1267,6 +1281,7 @@ export default function App() {
   }, [transactions, monthFilter]);
   function monthLabel(key) {
     if (key === "all") return "Todos los meses";
+    if (key.startsWith("year:")) return "Año " + key.slice(5) + " completo";
     const [y, m] = key.split("-");
     return MONTHS[parseInt(m, 10) - 1] + " " + y;
   }
@@ -1465,8 +1480,8 @@ export default function App() {
       .tx-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 10px 6px 10px 14px; background: ${PALETTE.paper}; border: 1px solid ${PALETTE.rule}; border-left-width: 4px; border-radius: 8px; margin-bottom: 6px; box-shadow: 0 1px 2px rgba(15,23,42,.04); animation: rowRise 0.35s cubic-bezier(.2,.8,.2,1) backwards; }
       .search-input { margin-left: auto; border: 1px solid ${PALETTE.rule}; background: none; border-radius: 999px; padding: 6px 14px; font-family: ${FONT}; font-size: 13px; color: ${PALETTE.ink}; width: 180px; outline: none; }
       .search-input:focus { border-color: ${PALETTE.gold}; }
-      .modal-overlay { position: fixed; inset: 0; background: rgba(10,20,18,.5); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 50; animation: fadeIn 0.2s ease; }
-      .modal-card { background: ${PALETTE.paper}; border: 1px solid ${PALETTE.rule}; width: 100%; max-width: 460px; max-height: 92vh; overflow: auto; border-radius: 12px; box-shadow: 0 24px 60px -16px rgba(0,0,0,.45); padding: 24px 26px; animation: popIn 0.25s cubic-bezier(.2,.8,.2,1); }
+      .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100vw; height: 100vh; height: 100dvh; box-sizing: border-box; background: rgba(10,20,18,.5); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 50; animation: fadeIn 0.2s ease; }
+      .modal-card { margin: auto; background: ${PALETTE.paper}; border: 1px solid ${PALETTE.rule}; width: 100%; max-width: 440px; max-height: 92vh; overflow: auto; border-radius: 12px; box-shadow: 0 24px 60px -16px rgba(0,0,0,.45); padding: 20px 24px; animation: popIn 0.25s cubic-bezier(.2,.8,.2,1); }
       .bigamt { display: flex; align-items: baseline; gap: 8px; margin: 4px 0 20px; border-bottom: 1px solid ${PALETTE.rule}; }
       .bigamt:focus-within { border-bottom-color: ${PALETTE.gold}; }
       .bigamt input { font-family: ${FONT}; font-size: 32px; font-weight: 700; letter-spacing: -0.02em; border: none; background: none; width: 100%; color: ${PALETTE.ink}; padding: 4px 0; outline: none; }
@@ -1478,8 +1493,7 @@ export default function App() {
       @media (prefers-reduced-motion: reduce) { .tx-row, .modal-overlay, .modal-card, .toast-msg { animation: none; } }
       @media (max-width: 540px) {
         .search-input { margin-left: 0; width: 100%; }
-        .modal-grid { grid-template-columns: 1fr !important; }
-        .modal-card { padding: 20px; }
+        .modal-card { padding: 18px 16px; }
       }
       .chip {
         display: inline-flex; align-items: center; background: ${PALETTE.paperDim}; border-radius: 3px;
@@ -1658,25 +1672,30 @@ export default function App() {
                 <p style={{ fontSize: 11, letterSpacing: 1.4, textTransform: "uppercase", color: PALETTE.inkSoft, margin: 0 }}>Registro</p>
                 <h2 style={{ fontFamily: FONT, fontSize: 26, fontWeight: 700, letterSpacing: "-0.02em", margin: "2px 0 0", color: PALETTE.ink }}>Movimientos</h2>
               </div>
-              <button type="button" className="submit-btn add-btn" onClick={openNewTransaction}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-                Añadir movimiento
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <label title="Importar movimientos desde un archivo .json" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: PALETTE.inkSoft, border: `1px solid ${PALETTE.rule}`, borderRadius: 8, padding: "9px 12px", cursor: importing ? "default" : "pointer", opacity: importing ? 0.6 : 1 }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M5 20h14" /></svg>
+                  {importing ? "Importando..." : "Importar"}
+                  <input type="file" accept="application/json,.json" onChange={handleImportFile} disabled={importing} style={{ display: "none" }} />
+                </label>
+                <button type="button" className="submit-btn add-btn" onClick={openNewTransaction}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                  Añadir movimiento
+                </button>
+              </div>
             </div>
-
-            <section style={{ background: PALETTE.coverSoft, borderRadius: 8, padding: "8px 14px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-              <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: 0 }}>{importMsg || "Importar movimientos desde un archivo .json"}</p>
-              <label style={{ fontSize: 11, color: PALETTE.ink, border: `1px solid ${PALETTE.rule}`, borderRadius: 6, padding: "5px 10px", cursor: "pointer", opacity: importing ? 0.6 : 1 }}>
-                {importing ? "Importando..." : "Elegir archivo"}
-                <input type="file" accept="application/json,.json" onChange={handleImportFile} disabled={importing} style={{ display: "none" }} />
-              </label>
-            </section>
+            {importMsg && <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "-6px 0 14px" }}>{importMsg}</p>}
 
             <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "22px 24px", marginBottom: 18 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
                 <select className="month-select" value={monthFilter} onChange={(e) => { setMonthFilter(e.target.value); setCatFilter(null); }} aria-label="Mes">
                   <option value="all">Todos los meses</option>
-                  {monthsAvailable.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+                  <optgroup label="Año completo">
+                    {registroYears.map((y) => <option key={y} value={"year:" + y}>{monthLabel("year:" + y)}</option>)}
+                  </optgroup>
+                  <optgroup label="Por mes">
+                    {monthsAvailable.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+                  </optgroup>
                 </select>
                 <p style={{ fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: PALETTE.inkSoft, margin: 0 }}>Gastos por categoría</p>
               </div>
@@ -1721,7 +1740,7 @@ export default function App() {
                     <div style={{ position: "absolute", inset: 0, display: "grid", placeContent: "center", textAlign: "center", pointerEvents: "none", padding: "0 40px" }}>
                       <span style={{ fontSize: 11, color: PALETTE.inkSoft, marginBottom: 2 }}>{donutActive ? donutActive.name : "Total gastado"}</span>
                       <span style={{ fontFamily: FONT, fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em", color: PALETTE.ink, fontVariantNumeric: "tabular-nums" }}>{formatMoneyRound(donutActive ? donutActive.value : registroSummary.expense)}</span>
-                      <span style={{ fontSize: 11.5, color: PALETTE.inkSoft }}>{donutActive ? `${Math.round((donutActive.value / registroSummary.expense) * 100)}% del gasto` : `${registroSummary.cats.length} categorías`}</span>
+                      <span style={{ fontSize: 11.5, color: PALETTE.inkSoft }}>{donutActive ? `${Math.round((donutActive.value / registroSummary.expense) * 100)}% del gasto` : ""}</span>
                     </div>
                   </div>
                   <div style={{ flex: 1, minWidth: 220, display: "flex", flexDirection: "column", gap: 2 }}>
@@ -1749,26 +1768,12 @@ export default function App() {
                 <button className={"pill-btn" + (typeFilter === "all" ? " active" : "")} onClick={() => setTypeFilter("all")}>Todo</button>
                 <button className={"pill-btn" + (typeFilter === "income" ? " active" : "")} onClick={() => setTypeFilter("income")}>Ingresos</button>
                 <button className={"pill-btn" + (typeFilter === "expense" ? " active" : "")} onClick={() => setTypeFilter("expense")}>Gastos</button>
+                <select className="pill-btn" style={{ cursor: "pointer" }} value={catFilter || ""} onChange={(e) => setCatFilter(e.target.value || null)} aria-label="Filtrar por categoría">
+                  <option value="">Todas las categorías</option>
+                  {registroSummary.usedCats.map((name) => <option key={name} value={name}>{name}</option>)}
+                </select>
                 <input className="search-input" type="search" placeholder="Buscar…" aria-label="Buscar movimientos" value={searchText} onChange={(e) => setSearchText(e.target.value)} />
               </div>
-              {registroSummary.usedCats.length > 1 && (
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {registroSummary.usedCats.map((name) => {
-                    const col = categoryColor(name);
-                    const on = catFilter === name;
-                    return (
-                      <button
-                        key={name}
-                        type="button"
-                        onClick={() => toggleCatFilter(name)}
-                        style={{ background: on ? col : col + "20", color: on ? "#fff" : col, border: "none", borderRadius: 999, padding: "4px 11px", fontFamily: FONT, fontSize: 12, fontWeight: 500, cursor: "pointer" }}
-                      >
-                        {name}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
             </div>
 
             <p style={{ fontSize: 11, letterSpacing: 1.4, textTransform: "uppercase", color: PALETTE.inkSoft, margin: "18px 0 0" }}>Registro ({filtered.length})</p>
@@ -1826,8 +1831,8 @@ export default function App() {
               </div>
             )}
 
-            {txModalOpen && (
-              <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="tx-modal-title" onMouseDown={(e) => { if (e.target === e.currentTarget) cancelEditTransaction(); }}>
+            {txModalOpen && createPortal(
+              <div className="modal-overlay" style={{ fontFamily: FONT, color: PALETTE.ink }} role="dialog" aria-modal="true" aria-labelledby="tx-modal-title" onMouseDown={(e) => { if (e.target === e.currentTarget) cancelEditTransaction(); }}>
                 <div className="modal-card">
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
                     <p id="tx-modal-title" style={{ fontFamily: FONT, fontSize: 18, fontWeight: 600, letterSpacing: "-0.01em", margin: 0, color: PALETTE.ink }}>{editingTxId ? "Editar movimiento" : "Añadir movimiento"}</p>
@@ -1840,11 +1845,15 @@ export default function App() {
                     <button type="button" className={"type-toggle" + (type === "income" ? " active-income" : "")} style={{ borderRadius: "0 6px 6px 0", borderLeft: "none" }} onClick={() => setType("income")}>Ingreso</button>
                   </div>
                   <form onSubmit={addTransaction}>
-                    <div className="bigamt">
-                      <input type="text" inputMode="decimal" placeholder="0,00" aria-label="Importe" autoFocus value={amount} onChange={(e) => setAmount(e.target.value)} />
-                      <span style={{ fontSize: 20, color: PALETTE.inkSoft }}>€</span>
-                    </div>
-                    <div className="modal-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px 24px", marginBottom: 18 }}>
+                    <div className="modal-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px 20px", marginBottom: 16 }}>
+                      <div>
+                        <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Importe (EUR)</label>
+                        <input className="ledger-input" type="text" inputMode="decimal" placeholder="0,00" autoFocus value={amount} onChange={(e) => setAmount(e.target.value)} style={{ fontSize: 17, fontWeight: 600 }} />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Fecha</label>
+                        <input className="ledger-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+                      </div>
                       <div>
                         <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Categoria</label>
                         <select className="ledger-select" value={category} onChange={(e) => {
@@ -1863,11 +1872,7 @@ export default function App() {
                           {(subConfig[category] || []).slice().sort((a, b) => a.localeCompare(b, "es")).map((s) => <option key={s} value={s}>{s}</option>)}
                         </select>
                       </div>
-                      <div>
-                        <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Fecha</label>
-                        <input className="ledger-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-                      </div>
-                      <div>
+                      <div style={{ gridColumn: "1 / -1" }}>
                         <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Descripcion (opcional)</label>
                         <input className="ledger-input" type="text" placeholder="Cafe con Marta" value={desc} onChange={(e) => setDesc(e.target.value)} />
                       </div>
@@ -1879,7 +1884,8 @@ export default function App() {
                     </div>
                   </form>
                 </div>
-              </div>
+              </div>,
+              document.body
             )}
 
             {toast && (
