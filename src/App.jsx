@@ -295,6 +295,8 @@ export default function App() {
   const [importing, setImporting] = useState(false);
 
   const [resumenYear, setResumenYear] = useState(CURRENT_YEAR);
+  const [ritmoMonth, setRitmoMonth] = useState(null);
+  const [ritmoDay, setRitmoDay] = useState(null);
   const [catYear, setCatYear] = useState(CURRENT_YEAR);
   const [catSelected, setCatSelected] = useState(null);
   const [subSelected, setSubSelected] = useState(null);
@@ -1284,6 +1286,34 @@ export default function App() {
   const TODAY_ISO = todayISO();
   const realized = useMemo(() => transactions.filter((t) => t.date <= TODAY_ISO), [transactions]);
 
+  // Ritmo del mes: balance acumulado (ingresos - gastos) dia a dia, por mes.
+  const ritmoSeries = useMemo(() => {
+    const byMonth = {};
+    realized.forEach((t) => {
+      const k = t.date.slice(0, 7);
+      if (!byMonth[k]) byMonth[k] = [];
+      byMonth[k].push(t);
+    });
+    const out = {};
+    Object.keys(byMonth).forEach((k) => {
+      const [y, m] = k.split("-").map(Number);
+      const dim = new Date(y, m, 0).getDate();
+      const len = k === CURRENT_MONTH_KEY ? Math.min(dim, TODAY.getDate()) : dim;
+      const net = new Array(len).fill(0);
+      byMonth[k].forEach((t) => {
+        const d = parseInt(t.date.slice(8, 10), 10);
+        if (d <= len) net[d - 1] += t.type === "income" ? t.amount : -t.amount;
+      });
+      let run = 0;
+      out[k] = net.map((v) => (run += v));
+    });
+    return out;
+  }, [realized]);
+  const ritmoMonths = useMemo(
+    () => Object.keys(ritmoSeries).filter((k) => resumenYear === "all" || k.slice(0, 4) === resumenYear).sort().reverse(),
+    [ritmoSeries, resumenYear]
+  );
+
   const yearsAvailable = useMemo(() => {
     const set = new Set(realized.map((t) => t.date.slice(0, 4)));
     return Array.from(set).sort().reverse();
@@ -1465,10 +1495,10 @@ export default function App() {
       .add-btn { display: inline-flex; align-items: center; gap: 8px; border-radius: 8px; padding: 11px 18px; font-weight: 500; font-size: 13.5px; box-shadow: 0 6px 16px -8px ${PALETTE.gold}; }
       .month-select { font-family: ${FONT}; font-weight: 700; font-size: 22px; letter-spacing: -0.02em; color: ${PALETTE.ink}; background: none; border: none; padding: 0; cursor: pointer; outline: none; text-transform: capitalize; }
       .month-select option { font-size: 14px; font-weight: 400; text-transform: capitalize; }
-      .seg-period { display: inline-flex; background: ${PALETTE.paperDim}; border-radius: 999px; padding: 3px; }
-      .seg-period button { border: none; background: none; padding: 6px 16px; border-radius: 999px; font-family: ${FONT}; font-size: 13px; font-weight: 600; color: ${PALETTE.inkSoft}; cursor: pointer; }
+      .seg-period { display: inline-flex; background: ${PALETTE.paperDim}; border-radius: 999px; padding: 2px; }
+      .seg-period button { border: none; background: none; padding: 4px 13px; border-radius: 999px; font-family: ${FONT}; font-size: 12px; font-weight: 600; color: ${PALETTE.inkSoft}; cursor: pointer; }
       .seg-period button.on { background: ${PALETTE.paper}; color: ${PALETTE.ink}; box-shadow: 0 1px 3px rgba(0,0,0,.14); }
-      .arrow-btn { width: 32px; height: 32px; border-radius: 50%; border: 1px solid ${PALETTE.rule}; background: none; display: grid; place-items: center; color: ${PALETTE.inkSoft}; cursor: pointer; }
+      .arrow-btn { width: 28px; height: 28px; border-radius: 50%; border: 1px solid ${PALETTE.rule}; background: none; display: grid; place-items: center; color: ${PALETTE.inkSoft}; cursor: pointer; }
       .arrow-btn:hover:not(:disabled) { background: ${PALETTE.paperDim}; color: ${PALETTE.ink}; }
       .arrow-btn:disabled { opacity: 0.35; cursor: default; }
       .icon-btn { background: none; border: none; width: 30px; height: 30px; border-radius: 6px; color: ${PALETTE.inkSoft}; display: grid; place-items: center; cursor: pointer; opacity: 0.75; transition: background 0.15s, color 0.15s, opacity 0.15s; }
@@ -1608,6 +1638,52 @@ export default function App() {
   function toggleCatFilter(name) { setCatFilter((cur) => (cur === name ? null : name)); }
   const registroBalance = registroSummary.income - registroSummary.expense;
 
+  // ---- Ritmo del mes (pestaña Resumen) ----
+  const ritmoKey = ritmoMonth && ritmoMonths.includes(ritmoMonth) ? ritmoMonth : (ritmoMonths[0] || null);
+  const ritmoGold = mode === "dark" ? "#E5B93C" : "#CA8A04";
+  let ritmo = null;
+  if (ritmoKey && ritmoSeries[ritmoKey]) {
+    const W = 640, H = 260, ML = 48, MR = 22, MT = 14, MB = 28, PW = W - ML - MR, PH = H - MT - MB;
+    const cur = ritmoSeries[ritmoKey];
+    const [cy, cm] = ritmoKey.split("-").map(Number);
+    const prevKey = cm === 1 ? `${cy - 1}-12` : `${cy}-${String(cm - 1).padStart(2, "0")}`;
+    const prev = ritmoSeries[prevKey] || null;
+    const others = ritmoMonths.filter((k) => k !== ritmoKey);
+    const stats = [];
+    for (let d = 1; d <= 31; d++) {
+      const vals = others.map((k) => ritmoSeries[k][d - 1]).filter((v) => v !== undefined);
+      stats.push(vals.length ? { min: Math.min(...vals), max: Math.max(...vals), avg: vals.reduce((a, b) => a + b, 0) / vals.length } : null);
+    }
+    const all = [...cur, ...(prev || [])];
+    stats.forEach((st) => { if (st) all.push(st.min, st.max, st.avg); });
+    const ticks = niceTicks(Math.min(...all), Math.max(...all), 5);
+    const ymin = ticks[0], ymax = ticks[ticks.length - 1];
+    const sx = (d) => ML + (PW * (d - 1)) / 30;
+    const sy = (v) => MT + PH * (1 - (v - ymin) / (ymax - ymin || 1));
+    const pathOf = (arr) => arr.map((v, i) => `${i ? "L" : "M"}${sx(i + 1).toFixed(1)} ${sy(v).toFixed(1)}`).join("");
+    let top = "", bot = "", avg = "";
+    for (let d = 1; d <= 30; d++) {
+      const st = stats[d - 1];
+      if (!st) continue;
+      top += `${top ? "L" : "M"}${sx(d).toFixed(1)} ${sy(st.max).toFixed(1)}`;
+      bot = `L${sx(d).toFixed(1)} ${sy(st.min).toFixed(1)}` + bot;
+      avg += `${avg ? "L" : "M"}${sx(d).toFixed(1)} ${sy(st.avg).toFixed(1)}`;
+    }
+    const day = Math.max(1, Math.min(31, ritmoDay || cur.length));
+    ritmo = {
+      W, H, ML, MR, MT, MB, PW, ticks, sx, sy, cur, prevKey,
+      curPath: pathOf(cur), prevPath: prev ? pathOf(prev) : "",
+      bandPath: top ? top + bot + "Z" : "", avgPath: avg,
+      day, curV: cur[day - 1], prevV: prev ? prev[day - 1] : undefined, st: stats[day - 1],
+    };
+  }
+  function ritmoPointer(e) {
+    if (!ritmo) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - r.left) / r.width) * ritmo.W;
+    setRitmoDay(Math.max(1, Math.min(31, Math.round(((x - ritmo.ML) / ritmo.PW) * 30) + 1)));
+  }
+
   // Selector de periodo: Mes / Año / Todo con flechas. Los periodos futuros nunca se pueden elegir.
   const curYearNum = parseInt(CURRENT_YEAR, 10);
   const periodMode = monthFilter === "all" ? "all" : monthFilter.startsWith("year:") ? "year" : "month";
@@ -1716,7 +1792,7 @@ export default function App() {
             {importMsg && <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "-6px 0 14px" }}>{importMsg}</p>}
 
             <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "22px 24px", marginBottom: 18 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, marginBottom: 16 }}>
                 <div className="seg-period" role="group" aria-label="Tipo de periodo">
                   {[["month", "Mes"], ["year", "Año"], ["all", "Todo"]].map(([id, text]) => (
                     <button key={id} type="button" className={periodMode === id ? "on" : ""} onClick={() => changePeriodMode(id)}>{text}</button>
@@ -1726,7 +1802,7 @@ export default function App() {
                   <button type="button" className="arrow-btn" onClick={() => stepPeriod(-1)} disabled={!canPrevPeriod} aria-label="Periodo anterior">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
                   </button>
-                  <span style={{ minWidth: 150, textAlign: "center", fontFamily: FONT, fontSize: 17, fontWeight: 700, letterSpacing: "-0.01em", textTransform: "capitalize", color: PALETTE.ink }}>{periodLabel}</span>
+                  <span style={{ minWidth: 140, textAlign: "center", fontFamily: FONT, fontSize: 16, fontWeight: 700, letterSpacing: "-0.01em", textTransform: "capitalize", color: PALETTE.ink }}>{periodLabel}</span>
                   <button type="button" className="arrow-btn" onClick={() => stepPeriod(1)} disabled={!canNextPeriod} aria-label="Periodo siguiente">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6" /></svg>
                   </button>
@@ -1993,6 +2069,64 @@ export default function App() {
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
+              )}
+            </section>
+            <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "24px 28px", marginTop: 20 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 6 }}>
+                <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: 0 }}>Ritmo del mes: balance acumulado día a día</p>
+                {ritmoMonths.length > 0 && (
+                  <select className="pill-btn" style={{ cursor: "pointer", textTransform: "capitalize" }} value={ritmoKey || ""} onChange={(e) => { setRitmoMonth(e.target.value); setRitmoDay(null); }} aria-label="Mes a analizar">
+                    {ritmoMonths.map((k) => <option key={k} value={k}>{monthLabel(k)}</option>)}
+                  </select>
+                )}
+              </div>
+              {!ritmo ? (
+                <p style={{ fontSize: 13, color: PALETTE.inkSoft }}>No hay datos para este periodo todavia.</p>
+              ) : (
+                <>
+                  <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 8px" }}>Ingresos menos gastos hasta cada día. La línea sube con los ingresos y baja con los gastos.</p>
+                  <svg
+                    viewBox={`0 0 ${ritmo.W} ${ritmo.H}`}
+                    style={{ width: "100%", height: "auto", display: "block", touchAction: "pan-y", cursor: "crosshair" }}
+                    role="img"
+                    aria-label="Balance acumulado por día del mes"
+                    onPointerMove={ritmoPointer}
+                    onPointerDown={ritmoPointer}
+                    onPointerLeave={() => setRitmoDay(null)}
+                  >
+                    {ritmo.ticks.map((t) => (
+                      <g key={t}>
+                        <line x1={ritmo.ML} x2={ritmo.W - ritmo.MR} y1={ritmo.sy(t)} y2={ritmo.sy(t)} stroke={t === 0 ? PALETTE.inkSoft : PALETTE.rule} strokeWidth="1" opacity={t === 0 ? 0.75 : 1} />
+                        <text x={ritmo.ML - 8} y={ritmo.sy(t) + 3.5} textAnchor="end" style={{ fontFamily: FONT, fontSize: 10.5, fill: PALETTE.inkSoft }}>{formatMoneyAxis(t)}</text>
+                      </g>
+                    ))}
+                    {[1, 5, 10, 15, 20, 25, 30].map((d) => (
+                      <text key={d} x={ritmo.sx(d)} y={ritmo.H - 9} textAnchor="middle" style={{ fontFamily: FONT, fontSize: 10.5, fill: PALETTE.inkSoft }}>{d}</text>
+                    ))}
+                    {ritmo.bandPath && <path d={ritmo.bandPath} fill={PALETTE.income} opacity="0.1" />}
+                    {ritmo.avgPath && <path d={ritmo.avgPath} fill="none" stroke={ritmoGold} strokeWidth="2" strokeDasharray="6 4" />}
+                    {ritmo.prevPath && <path d={ritmo.prevPath} fill="none" stroke={PALETTE.inkSoft} strokeWidth="1.8" opacity="0.8" strokeLinejoin="round" />}
+                    <path d={ritmo.curPath} fill="none" stroke={PALETTE.income} strokeWidth="3.4" strokeLinejoin="round" strokeLinecap="round" />
+                    <circle cx={ritmo.sx(ritmo.cur.length)} cy={ritmo.sy(ritmo.cur[ritmo.cur.length - 1])} r="4.6" fill={PALETTE.paper} stroke={PALETTE.income} strokeWidth="2.4" />
+                    {ritmoKey === CURRENT_MONTH_KEY && (
+                      <text x={ritmo.sx(ritmo.cur.length) + 8} y={ritmo.sy(ritmo.cur[ritmo.cur.length - 1]) - 8} style={{ fontFamily: FONT, fontSize: 10.5, fontWeight: 800, fill: PALETTE.income }}>hoy</text>
+                    )}
+                    <line x1={ritmo.sx(ritmo.day)} x2={ritmo.sx(ritmo.day)} y1={ritmo.MT} y2={ritmo.H - ritmo.MB} stroke={PALETTE.inkSoft} strokeDasharray="3 3" opacity="0.6" />
+                  </svg>
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${PALETTE.rule}`, display: "flex", gap: "6px 16px", flexWrap: "wrap", fontSize: 12.5, color: PALETTE.inkSoft, alignItems: "baseline", fontVariantNumeric: "tabular-nums" }}>
+                    <strong style={{ color: PALETTE.ink }}>día {ritmo.day}</strong>
+                    <span style={{ textTransform: "capitalize" }}>{monthLabel(ritmoKey).split(" ")[0]}: {ritmo.curV === undefined ? "sin datos" : <strong style={{ color: ritmo.curV >= 0 ? PALETTE.income : PALETTE.expense }}>{ritmo.curV >= 0 ? "+" : ""}{formatMoneyRound(ritmo.curV)}</strong>}</span>
+                    {ritmo.prevKey && ritmo.prevV !== undefined && <span style={{ textTransform: "capitalize" }}>{monthLabel(ritmo.prevKey).split(" ")[0]}: <strong style={{ color: PALETTE.ink }}>{ritmo.prevV >= 0 ? "+" : ""}{formatMoneyRound(ritmo.prevV)}</strong></span>}
+                    {ritmo.st && <span>Media: <strong style={{ color: PALETTE.ink }}>{ritmo.st.avg >= 0 ? "+" : ""}{formatMoneyRound(ritmo.st.avg)}</strong></span>}
+                    {ritmo.st && ritmo.curV !== undefined && <span>Frente a la media: <strong style={{ color: ritmo.curV - ritmo.st.avg >= 0 ? PALETTE.income : PALETTE.expense }}>{ritmo.curV - ritmo.st.avg >= 0 ? "+" : ""}{formatMoneyRound(ritmo.curV - ritmo.st.avg)}</strong></span>}
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginTop: 8, fontSize: 11.5, color: PALETTE.inkSoft }}>
+                    <span><i style={{ display: "inline-block", width: 14, height: 3, borderRadius: 2, background: PALETTE.income, marginRight: 5, verticalAlign: 3 }} /><span style={{ textTransform: "capitalize" }}>{monthLabel(ritmoKey).split(" ")[0]}</span></span>
+                    {ritmo.prevPath && <span><i style={{ display: "inline-block", width: 14, height: 3, borderRadius: 2, background: PALETTE.inkSoft, marginRight: 5, verticalAlign: 3 }} /><span style={{ textTransform: "capitalize" }}>{monthLabel(ritmo.prevKey).split(" ")[0]}</span></span>}
+                    {ritmo.avgPath && <span><i style={{ display: "inline-block", width: 14, height: 3, borderRadius: 2, background: ritmoGold, marginRight: 5, verticalAlign: 3 }} />Media de los demás meses</span>}
+                    {ritmo.bandPath && <span><i style={{ display: "inline-block", width: 14, height: 9, borderRadius: 2, background: PALETTE.income, opacity: 0.25, marginRight: 5, verticalAlign: -1 }} />Rango del mejor al peor mes</span>}
+                  </div>
+                </>
               )}
             </section>
           </>
