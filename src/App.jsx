@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell,
@@ -6,34 +6,45 @@ import {
 import { supabase } from "./supabaseClient";
 
 const LIGHT_PALETTE = {
-  cover: "#F7F5F0",
-  coverSoft: "#FFFFFF",
+  cover: "#FFFFFF",
+  coverSoft: "#F6F8F2",
   paper: "#FFFFFF",
-  paperDim: "#EFEBE2",
-  ink: "#1B2333",
-  inkSoft: "#6B7280",
-  rule: "#E3DFD5",
-  gold: "#219E82",
-  income: "#1F8F76",
-  incomeBg: "#E1F3EE",
-  expense: "#DB5C77",
-  expenseBg: "#FCEAEF",
+  paperDim: "#F1F3E8",
+  ink: "#1C2B22",
+  inkSoft: "#5B6B5F",
+  rule: "#DDE2CF",
+  gold: "#0F766E",
+  income: "#0F766E",
+  incomeBg: "#E3F1EF",
+  expense: "#DC2626",
+  expenseBg: "#FCE8E8",
+  onAccent: "#FFFFFF",
+  shadow: "0 1px 2px rgba(15,23,42,.04), 0 8px 24px -14px rgba(15,23,42,.18)",
 };
 
 const DARK_PALETTE = {
-  cover: "#0E211C",
-  coverSoft: "#132A23",
-  paper: "#16302A",
-  paperDim: "#1D3A32",
-  ink: "#F5F7F5",
-  inkSoft: "#9FB3AC",
-  rule: "#274A40",
-  gold: "#3FD6AE",
-  income: "#3FD6AE",
-  incomeBg: "#1B3A30",
-  expense: "#F0899E",
-  expenseBg: "#3A1F28",
+  cover: "#0B1412",
+  coverSoft: "#101C19",
+  paper: "#13211E",
+  paperDim: "#1B2E2A",
+  ink: "#EEF5F1",
+  inkSoft: "#8FAFA5",
+  rule: "#22403A",
+  gold: "#2DD4BF",
+  income: "#2DD4BF",
+  incomeBg: "#12332F",
+  expense: "#FF7C7C",
+  expenseBg: "#3A1F1F",
+  onAccent: "#06150F",
+  shadow: "0 1px 2px rgba(0,0,0,.3), 0 8px 24px -14px rgba(0,0,0,.6)",
 };
+
+// Teal y oro. El orden importa: categoryColor() usa la posicion de la categoria
+// (gastos primero: Hogar, Ocio, Viajes, Transporte, Salud, Otros; luego ingresos).
+const CATEGORY_COLORS = [
+  "#0F766E", "#CA8A04", "#B8689A", "#0284C7", "#DC2626", "#78716C",
+  "#16A34A", "#D9734E", "#5B6CC9", "#A3A83A",
+];
 
 const DEFAULT_CATEGORIES = {
   income: ["Nomina", "Intereses", "Hacienda", "Regalos", "Bizum", "Otros"],
@@ -99,6 +110,12 @@ function formatMoneyRound(n) {
   const v = Math.round(n);
   const neg = v < 0;
   return (neg ? "-" : "") + groupThousands(Math.abs(v).toString()) + " \u20AC";
+}
+function formatMoney1(n) {
+  const v = Math.round(n * 10) / 10;
+  const neg = v < 0;
+  const parts = Math.abs(v).toFixed(1).split(".");
+  return (neg ? "-" : "") + groupThousands(parts[0]) + "," + parts[1] + " \u20AC";
 }
 function formatMoneyShort(n) {
   return new Intl.NumberFormat("es-ES", { maximumFractionDigits: 0 }).format(Math.round(n)) + " EUR";
@@ -256,9 +273,16 @@ export default function App() {
   const [subcategory, setSubcategory] = useState("");
   const [date, setDate] = useState(todayISO());
   const [formError, setFormError] = useState("");
+  const [editingTxId, setEditingTxId] = useState(null);
+  const skipTypeResetRef = useRef(false);
 
   const [monthFilter, setMonthFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
+  const [catFilter, setCatFilter] = useState(null);
+  const [searchText, setSearchText] = useState("");
+  const [txModalOpen, setTxModalOpen] = useState(false);
+  const [toast, setToast] = useState("");
+  const toastTimerRef = useRef(null);
   const [importMsg, setImportMsg] = useState("");
   const [importing, setImporting] = useState(false);
 
@@ -378,6 +402,14 @@ export default function App() {
   }, [catConfig]);
 
   useEffect(() => {
+    if (!txModalOpen) return;
+    const onKey = (e) => { if (e.key === "Escape") cancelEditTransaction(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [txModalOpen]);
+
+  useEffect(() => {
+    if (skipTypeResetRef.current) { skipTypeResetRef.current = false; return; }
     const nextCat = (catConfig[type] && catConfig[type][0]) || "";
     setCategory(nextCat);
     const sorted = (subConfig[nextCat] || []).slice().sort((a, b) => a.localeCompare(b, "es"));
@@ -1018,23 +1050,70 @@ export default function App() {
     if (hasSubs && !subcategory) { setFormError("Elige una subcategoria."); return; }
     setFormError("");
     const entry = {
-      id: uid(), type, amount: Math.round(value * 100) / 100,
+      id: editingTxId || uid(), type, amount: Math.round(value * 100) / 100,
       description: desc.trim() || category,
       category, subcategory: subcategory || "", date,
     };
-    const next = [entry, ...transactions].sort((a, b) => (a.date < b.date ? 1 : -1));
+    const base = editingTxId ? transactions.filter((t) => t.id !== editingTxId) : transactions;
+    const next = [entry, ...base].sort((a, b) => (a.date < b.date ? 1 : -1));
     const result = await persistTransactions(next);
     if (result.ok) {
       setAmount(""); setDesc(""); setSubcategory("");
+      setEditingTxId(null);
+      setTxModalOpen(false);
+      showToast("Movimiento guardado");
     } else {
       setFormError(`No se pudo guardar: ${result.error}`);
     }
+  }
+
+  function startEditTransaction(t) {
+    if (t.type !== type) skipTypeResetRef.current = true;
+    setEditingTxId(t.id);
+    setType(t.type);
+    setAmount(String(t.amount).replace(".", ","));
+    setDate(t.date);
+    setCategory(t.category);
+    setSubcategory(t.subcategory || "");
+    setDesc(t.description === t.category ? "" : t.description);
+    setFormError("");
+    setTxModalOpen(true);
+  }
+
+  function cancelEditTransaction() {
+    setEditingTxId(null);
+    setAmount(""); setDesc(""); setFormError("");
+    setTxModalOpen(false);
+  }
+
+  function openNewTransaction() {
+    setEditingTxId(null);
+    setAmount(""); setDesc(""); setFormError("");
+    setDate(todayISO());
+    setTxModalOpen(true);
+  }
+
+  function showToast(msg) {
+    setToast(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(""), 2400);
+  }
+
+  // Color estable por categoria principal (por su posicion en la lista).
+  function categoryColor(cat) {
+    const exp = catConfig.expense || [];
+    const all = [...exp, ...(catConfig.income || []).filter((c) => !exp.includes(c))];
+    let i = all.indexOf(cat);
+    if (i < 0) { i = 0; for (const ch of String(cat)) i = (i * 31 + ch.charCodeAt(0)) % 997; }
+    return CATEGORY_COLORS[i % CATEGORY_COLORS.length];
   }
 
   async function removeTransaction(id) {
     const result = await persistTransactions(transactions.filter((t) => t.id !== id));
     if (!result.ok) {
       setFormError(`No se pudo borrar: ${result.error}`);
+    } else {
+      showToast("Movimiento eliminado");
     }
   }
 
@@ -1164,10 +1243,28 @@ export default function App() {
     .filter((t) => {
       if (monthFilter !== "all" && t.date.slice(0, 7) !== monthFilter) return false;
       if (typeFilter !== "all" && t.type !== typeFilter) return false;
+      if (catFilter && t.category !== catFilter) return false;
+      if (searchText.trim()) {
+        const q = searchText.trim().toLowerCase();
+        if (!`${t.description} ${t.category} ${t.subcategory || ""}`.toLowerCase().includes(q)) return false;
+      }
       return true;
     })
     .sort((a, b) => (a.date === b.date ? 0 : a.date < b.date ? 1 : -1)),
-  [transactions, monthFilter, typeFilter]);
+  [transactions, monthFilter, typeFilter, catFilter, searchText]);
+  const registroSummary = useMemo(() => {
+    let income = 0, expense = 0;
+    const byCat = {};
+    const used = new Set();
+    transactions.forEach((t) => {
+      if (monthFilter !== "all" && t.date.slice(0, 7) !== monthFilter) return;
+      used.add(t.category);
+      if (t.type === "income") income += t.amount;
+      else { expense += t.amount; byCat[t.category] = (byCat[t.category] || 0) + t.amount; }
+    });
+    const cats = Object.keys(byCat).map((name) => ({ name, value: byCat[name] })).sort((a, b) => b.value - a.value);
+    return { income, expense, cats, usedCats: Array.from(used) };
+  }, [transactions, monthFilter]);
   function monthLabel(key) {
     if (key === "all") return "Todos los meses";
     const [y, m] = key.split("-");
@@ -1323,7 +1420,7 @@ export default function App() {
       }
       .ledger-input:focus, .ledger-select:focus { border-bottom: 1px solid ${PALETTE.gold}; }
       .ledger-row:hover .del-btn { opacity: 1; }
-      .del-btn { opacity: 0; transition: opacity 0.15s ease; }
+      .del-btn { opacity: 0.4; transition: opacity 0.15s ease; }
       .pill-btn {
         font-family: ${FONT}; font-size: 13px; padding: 6px 14px; border-radius: 3px;
         border: 1px solid ${PALETTE.rule}; background: transparent; cursor: pointer; color: ${PALETTE.inkSoft};
@@ -1337,7 +1434,7 @@ export default function App() {
       .type-toggle.active-expense { background: ${PALETTE.expenseBg}; color: ${PALETTE.expense}; border-color: ${PALETTE.expense}; }
       .submit-btn {
         font-family: ${FONT}; font-size: 14px; padding: 10px 22px; background: ${PALETTE.gold};
-        color: #fff; border: none; border-radius: 3px; cursor: pointer;
+        color: ${PALETTE.onAccent}; border: none; border-radius: 3px; cursor: pointer;
       }
       .submit-btn:hover { filter: brightness(0.94); }
       .tab-btn {
@@ -1354,6 +1451,35 @@ export default function App() {
       .cat-row.selected .radio-dot { border-color: ${PALETTE.gold}; background: ${PALETTE.gold}; }
       .chip-x {
         background: none; border: none; cursor: pointer; color: ${PALETTE.inkSoft}; font-size: 13px; margin-left: 6px;
+      }
+      .add-btn { display: inline-flex; align-items: center; gap: 8px; border-radius: 8px; padding: 11px 18px; font-weight: 500; font-size: 13.5px; box-shadow: 0 6px 16px -8px ${PALETTE.gold}; }
+      .month-select { font-family: ${FONT}; font-weight: 700; font-size: 22px; letter-spacing: -0.02em; color: ${PALETTE.ink}; background: none; border: none; padding: 0; cursor: pointer; outline: none; text-transform: capitalize; }
+      .month-select option { font-size: 14px; font-weight: 400; text-transform: capitalize; }
+      .icon-btn { background: none; border: none; width: 30px; height: 30px; border-radius: 6px; color: ${PALETTE.inkSoft}; display: grid; place-items: center; cursor: pointer; opacity: 0.75; transition: background 0.15s, color 0.15s, opacity 0.15s; }
+      .icon-btn:hover { background: ${PALETTE.paperDim}; color: ${PALETTE.ink}; opacity: 1; }
+      .icon-btn.danger:hover { color: ${PALETTE.expense}; }
+      .donut-seg { fill: none; stroke-width: 22; cursor: pointer; transition: opacity 0.25s, stroke-width 0.2s; }
+      .donut-seg:hover { stroke-width: 26; }
+      .legend-row { background: none; border: none; display: grid; grid-template-columns: 10px minmax(0, 1fr) auto 38px; gap: 10px; align-items: center; padding: 6px 8px; margin: 0 -8px; border-radius: 6px; text-align: left; font-family: ${FONT}; font-size: 13px; color: ${PALETTE.ink}; cursor: pointer; transition: background 0.15s, opacity 0.2s; }
+      .legend-row:hover { background: ${PALETTE.paperDim}; }
+      .tx-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 10px 6px 10px 14px; background: ${PALETTE.paper}; border: 1px solid ${PALETTE.rule}; border-left-width: 4px; border-radius: 8px; margin-bottom: 6px; box-shadow: 0 1px 2px rgba(15,23,42,.04); animation: rowRise 0.35s cubic-bezier(.2,.8,.2,1) backwards; }
+      .search-input { margin-left: auto; border: 1px solid ${PALETTE.rule}; background: none; border-radius: 999px; padding: 6px 14px; font-family: ${FONT}; font-size: 13px; color: ${PALETTE.ink}; width: 180px; outline: none; }
+      .search-input:focus { border-color: ${PALETTE.gold}; }
+      .modal-overlay { position: fixed; inset: 0; background: rgba(10,20,18,.5); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 50; animation: fadeIn 0.2s ease; }
+      .modal-card { background: ${PALETTE.paper}; border: 1px solid ${PALETTE.rule}; width: 100%; max-width: 460px; max-height: 92vh; overflow: auto; border-radius: 12px; box-shadow: 0 24px 60px -16px rgba(0,0,0,.45); padding: 24px 26px; animation: popIn 0.25s cubic-bezier(.2,.8,.2,1); }
+      .bigamt { display: flex; align-items: baseline; gap: 8px; margin: 4px 0 20px; border-bottom: 1px solid ${PALETTE.rule}; }
+      .bigamt:focus-within { border-bottom-color: ${PALETTE.gold}; }
+      .bigamt input { font-family: ${FONT}; font-size: 32px; font-weight: 700; letter-spacing: -0.02em; border: none; background: none; width: 100%; color: ${PALETTE.ink}; padding: 4px 0; outline: none; }
+      .toast-msg { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); background: ${PALETTE.ink}; color: ${PALETTE.cover}; padding: 11px 18px 11px 14px; border-radius: 999px; font-family: ${FONT}; font-size: 13.5px; font-weight: 500; display: flex; align-items: center; gap: 9px; z-index: 60; box-shadow: 0 12px 30px -10px rgba(0,0,0,.4); animation: toastIn 0.3s cubic-bezier(.2,.8,.2,1); }
+      @keyframes rowRise { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+      @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes popIn { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: none; } }
+      @keyframes toastIn { from { opacity: 0; transform: translate(-50%, 16px); } to { opacity: 1; transform: translate(-50%, 0); } }
+      @media (prefers-reduced-motion: reduce) { .tx-row, .modal-overlay, .modal-card, .toast-msg { animation: none; } }
+      @media (max-width: 540px) {
+        .search-input { margin-left: 0; width: 100%; }
+        .modal-grid { grid-template-columns: 1fr !important; }
+        .modal-card { padding: 20px; }
       }
       .chip {
         display: inline-flex; align-items: center; background: ${PALETTE.paperDim}; border-radius: 3px;
@@ -1393,7 +1519,7 @@ export default function App() {
           <h1 style={{ fontFamily: FONT, fontWeight: 500, fontSize: 26, color: PALETTE.ink, margin: "8px 0 24px", textAlign: "center" }}>
             {authMode === "login" ? "Inicia sesion" : "Crea tu cuenta"}
           </h1>
-          <div style={{ background: PALETTE.paper, borderRadius: 4, padding: "28px 28px" }}>
+          <div style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "28px 28px" }}>
             <form onSubmit={authMode === "login" ? handleLogin : handleRegister}>
               <div style={{ marginBottom: 16 }}>
                 <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Usuario</label>
@@ -1445,6 +1571,28 @@ export default function App() {
   }
 
   // ---------------- Main app ----------------
+  const registroGroups = [];
+  filtered.forEach((t) => {
+    const g = registroGroups[registroGroups.length - 1];
+    const delta = t.type === "income" ? t.amount : -t.amount;
+    if (g && g.date === t.date) { g.items.push(t); g.net += delta; }
+    else registroGroups.push({ date: t.date, items: [t], net: delta });
+  });
+  const donutR = 80;
+  const donutC = 2 * Math.PI * donutR;
+  const donutGap = registroSummary.cats.length > 1 ? 2.5 : 0;
+  let donutAcc = 0;
+  const donutSegs = registroSummary.expense > 0 ? registroSummary.cats.map((c) => {
+    const len = (c.value / registroSummary.expense) * donutC;
+    const seg = Math.max(len - donutGap, 0.5);
+    const out = { ...c, seg, offset: -donutAcc, color: categoryColor(c.name) };
+    donutAcc += len;
+    return out;
+  }) : [];
+  const donutActive = catFilter ? registroSummary.cats.find((c) => c.name === catFilter) : null;
+  function toggleCatFilter(name) { setCatFilter((cur) => (cur === name ? null : name)); }
+  const registroBalance = registroSummary.income - registroSummary.expense;
+
   return (
     <div style={{ fontFamily: FONT, background: PALETTE.cover, minHeight: "100vh", color: PALETTE.ink }}>
       {sharedStyle}
@@ -1505,105 +1653,241 @@ export default function App() {
 
         {activeTab === "registro" && (
           <>
-            <section style={{ background: PALETTE.coverSoft, borderRadius: 4, padding: "8px 14px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+              <div>
+                <p style={{ fontSize: 11, letterSpacing: 1.4, textTransform: "uppercase", color: PALETTE.inkSoft, margin: 0 }}>Registro</p>
+                <h2 style={{ fontFamily: FONT, fontSize: 26, fontWeight: 700, letterSpacing: "-0.02em", margin: "2px 0 0", color: PALETTE.ink }}>Movimientos</h2>
+              </div>
+              <button type="button" className="submit-btn add-btn" onClick={openNewTransaction}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                Añadir movimiento
+              </button>
+            </div>
+
+            <section style={{ background: PALETTE.coverSoft, borderRadius: 8, padding: "8px 14px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
               <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: 0 }}>{importMsg || "Importar movimientos desde un archivo .json"}</p>
-              <label style={{ fontSize: 11, color: PALETTE.ink, border: `1px solid ${PALETTE.rule}`, borderRadius: 3, padding: "5px 10px", cursor: "pointer", opacity: importing ? 0.6 : 1 }}>
+              <label style={{ fontSize: 11, color: PALETTE.ink, border: `1px solid ${PALETTE.rule}`, borderRadius: 6, padding: "5px 10px", cursor: "pointer", opacity: importing ? 0.6 : 1 }}>
                 {importing ? "Importando..." : "Elegir archivo"}
                 <input type="file" accept="application/json,.json" onChange={handleImportFile} disabled={importing} style={{ display: "none" }} />
               </label>
             </section>
 
-            <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "24px 32px", marginBottom: 20 }}>
-              <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 16px" }}>Nuevo movimiento</p>
-              <div style={{ display: "flex", gap: 0, marginBottom: 18 }}>
-                <button type="button" className={"type-toggle" + (type === "expense" ? " active-expense" : "")} style={{ borderRadius: "3px 0 0 3px" }} onClick={() => setType("expense")}>Gasto</button>
-                <button type="button" className={"type-toggle" + (type === "income" ? " active-income" : "")} style={{ borderRadius: "0 3px 3px 0", borderLeft: "none" }} onClick={() => setType("income")}>Ingreso</button>
-              </div>
-              <form onSubmit={addTransaction}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px 24px", marginBottom: 16 }}>
-                  <div>
-                    <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Importe (EUR)</label>
-                    <input className="ledger-input" type="text" inputMode="decimal" placeholder="0,00" value={amount} onChange={(e) => setAmount(e.target.value)} />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Fecha</label>
-                    <input className="ledger-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Categoria</label>
-                    <select className="ledger-select" value={category} onChange={(e) => {
-                      const nextCat = e.target.value;
-                      setCategory(nextCat);
-                      const sorted = (subConfig[nextCat] || []).slice().sort((a, b) => a.localeCompare(b, "es"));
-                      setSubcategory(sorted[0] || "");
-                    }}>
-                      {(catConfig[type] || []).map((c) => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Subcategoria</label>
-                    <select className="ledger-select" value={subcategory} onChange={(e) => setSubcategory(e.target.value)} disabled={!(subConfig[category] && subConfig[category].length)}>
-                      {(subConfig[category] || []).length === 0 && <option value="">Sin subcategorias</option>}
-                      {(subConfig[category] || []).slice().sort((a, b) => a.localeCompare(b, "es")).map((s) => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                  </div>
-                  <div style={{ gridColumn: "1 / -1" }}>
-                    <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Descripcion (opcional)</label>
-                    <input className="ledger-input" type="text" placeholder="Cafe con Marta" value={desc} onChange={(e) => setDesc(e.target.value)} />
-                  </div>
-                </div>
-                {formError && <p style={{ color: PALETTE.expense, fontSize: 13, margin: "0 0 12px" }}>{formError}</p>}
-                <button type="submit" className="submit-btn">Añadir {type === "income" ? "ingreso" : "gasto"}</button>
-              </form>
-            </section>
-
-            <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "24px 32px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 18 }}>
-                <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: 0 }}>Registro ({filtered.length})</p>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <select className="pill-btn" style={{ cursor: "pointer" }} value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)}>
-                    <option value="all">Todos los meses</option>
-                    {monthsAvailable.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
-                  </select>
-                  <button className={"pill-btn" + (typeFilter === "all" ? " active" : "")} onClick={() => setTypeFilter("all")}>Todo</button>
-                  <button className={"pill-btn" + (typeFilter === "income" ? " active" : "")} onClick={() => setTypeFilter("income")}>Ingresos</button>
-                  <button className={"pill-btn" + (typeFilter === "expense" ? " active" : "")} onClick={() => setTypeFilter("expense")}>Gastos</button>
-                </div>
+            <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "22px 24px", marginBottom: 18 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
+                <select className="month-select" value={monthFilter} onChange={(e) => { setMonthFilter(e.target.value); setCatFilter(null); }} aria-label="Mes">
+                  <option value="all">Todos los meses</option>
+                  {monthsAvailable.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+                </select>
+                <p style={{ fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: PALETTE.inkSoft, margin: 0 }}>Gastos por categoría</p>
               </div>
 
-              {!dataLoaded ? (
-                <p style={{ fontSize: 13, color: PALETTE.inkSoft }}>Cargando movimientos...</p>
-              ) : loadError ? (
-                <div style={{ padding: "24px 0", textAlign: "center" }}>
-                  <p style={{ fontFamily: FONT, fontSize: 18, color: PALETTE.expense, margin: "0 0 4px" }}>No se pudieron cargar tus movimientos</p>
-                  <p style={{ fontSize: 13, color: PALETTE.inkSoft, margin: "0 0 14px" }}>Esto es un fallo de conexion, no significa que se hayan borrado. Recarga la pagina para intentarlo de nuevo.</p>
-                  <button type="button" className="submit-btn" onClick={() => window.location.reload()}>Recargar</button>
-                </div>
-              ) : filtered.length === 0 ? (
-                <div style={{ padding: "24px 0", textAlign: "center" }}>
-                  <p style={{ fontFamily: FONT, fontSize: 18, color: PALETTE.ink, margin: "0 0 4px" }}>El registro esta vacio</p>
-                  <p style={{ fontSize: 13, color: PALETTE.inkSoft, margin: 0 }}>Anade tu primer movimiento arriba para empezar a llevar la cuenta.</p>
-                </div>
-              ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12, paddingBottom: 20, marginBottom: 22, borderBottom: `1px solid ${PALETTE.rule}` }}>
                 <div>
-                  {filtered.map((t) => (
-                    <div key={t.id} className="ledger-row" style={{ display: "grid", gridTemplateColumns: "44px 1fr auto 22px", alignItems: "center", gap: 10, padding: "11px 0", borderBottom: `1px solid ${PALETTE.rule}` }}>
-                      <span style={{ fontFamily: FONT, fontSize: 11, color: PALETTE.inkSoft }}>{formatDate(t.date)}</span>
-                      <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-                        <span style={{ fontSize: 14, color: PALETTE.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.description}</span>
-                        <span style={{ fontSize: 11, color: t.type === "income" ? PALETTE.income : PALETTE.expense, background: t.type === "income" ? PALETTE.incomeBg : PALETTE.expenseBg, padding: "2px 7px", borderRadius: 3, alignSelf: "flex-start", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>
-                          {t.category}{t.subcategory ? ` \u203A ${t.subcategory}` : ""}
-                        </span>
-                      </div>
-                      <span style={{ fontFamily: FONT, fontSize: 14, fontWeight: 500, textAlign: "right", whiteSpace: "nowrap", color: t.type === "income" ? PALETTE.income : PALETTE.expense }}>
-                        {t.type === "income" ? "+" : "-"}{formatMoney(t.amount)}
-                      </span>
-                      <button className="del-btn" onClick={() => removeTransaction(t.id)} aria-label="Eliminar movimiento" style={{ background: "none", border: "none", cursor: "pointer", color: PALETTE.inkSoft, fontSize: 16, justifySelf: "end" }}>x</button>
+                  <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "0 0 2px" }}>Ingresos</p>
+                  <p style={{ fontFamily: FONT, fontSize: 19, fontWeight: 600, letterSpacing: "-0.01em", color: PALETTE.income, margin: 0, fontVariantNumeric: "tabular-nums" }}>{formatMoneyRound(registroSummary.income)}</p>
+                </div>
+                <div>
+                  <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "0 0 2px" }}>Gastos</p>
+                  <p style={{ fontFamily: FONT, fontSize: 19, fontWeight: 600, letterSpacing: "-0.01em", color: PALETTE.expense, margin: 0, fontVariantNumeric: "tabular-nums" }}>{formatMoneyRound(registroSummary.expense)}</p>
+                </div>
+                <div>
+                  <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "0 0 2px" }}>Balance</p>
+                  <p style={{ fontFamily: FONT, fontSize: 19, fontWeight: 600, letterSpacing: "-0.01em", color: registroBalance >= 0 ? PALETTE.income : PALETTE.expense, margin: 0, fontVariantNumeric: "tabular-nums" }}>{registroBalance >= 0 ? "+" : "-"}{formatMoneyRound(Math.abs(registroBalance))}</p>
+                </div>
+              </div>
+
+              {donutSegs.length === 0 ? (
+                <p style={{ fontSize: 13, color: PALETTE.inkSoft, margin: 0 }}>Sin gastos en este periodo.</p>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 28, flexWrap: "wrap" }}>
+                  <div style={{ position: "relative", width: 190, height: 190, flex: "none", margin: "0 auto" }}>
+                    <svg viewBox="0 0 200 200" style={{ width: "100%", height: "100%", transform: "rotate(-90deg)" }} role="img" aria-label="Gráfico de anillo de gastos por categoría">
+                      <circle cx="100" cy="100" r={donutR} fill="none" stroke={PALETTE.paperDim} strokeWidth="22" />
+                      {donutSegs.map((c) => (
+                        <circle
+                          key={c.name}
+                          className="donut-seg"
+                          cx="100" cy="100" r={donutR}
+                          stroke={c.color}
+                          strokeDasharray={`${c.seg} ${donutC - c.seg}`}
+                          strokeDashoffset={c.offset}
+                          style={{ opacity: catFilter && catFilter !== c.name ? 0.22 : 1, strokeWidth: catFilter === c.name ? 26 : undefined }}
+                          onClick={() => toggleCatFilter(c.name)}
+                        >
+                          <title>{c.name} · {formatMoneyRound(c.value)}</title>
+                        </circle>
+                      ))}
+                    </svg>
+                    <div style={{ position: "absolute", inset: 0, display: "grid", placeContent: "center", textAlign: "center", pointerEvents: "none", padding: "0 40px" }}>
+                      <span style={{ fontSize: 11, color: PALETTE.inkSoft, marginBottom: 2 }}>{donutActive ? donutActive.name : "Total gastado"}</span>
+                      <span style={{ fontFamily: FONT, fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em", color: PALETTE.ink, fontVariantNumeric: "tabular-nums" }}>{formatMoneyRound(donutActive ? donutActive.value : registroSummary.expense)}</span>
+                      <span style={{ fontSize: 11.5, color: PALETTE.inkSoft }}>{donutActive ? `${Math.round((donutActive.value / registroSummary.expense) * 100)}% del gasto` : `${registroSummary.cats.length} categorías`}</span>
                     </div>
-                  ))}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 220, display: "flex", flexDirection: "column", gap: 2 }}>
+                    {donutSegs.map((c) => (
+                      <button
+                        key={c.name}
+                        type="button"
+                        className="legend-row"
+                        onClick={() => toggleCatFilter(c.name)}
+                        style={{ opacity: catFilter && catFilter !== c.name ? 0.4 : 1, background: catFilter === c.name ? PALETTE.paperDim : undefined }}
+                      >
+                        <span style={{ width: 10, height: 10, borderRadius: 3, background: c.color }} />
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</span>
+                        <span style={{ fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>{formatMoneyRound(c.value)}</span>
+                        <span style={{ color: PALETTE.inkSoft, fontSize: 12, textAlign: "right" }}>{Math.round((c.value / registroSummary.expense) * 100)}%</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
             </section>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 6 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                <button className={"pill-btn" + (typeFilter === "all" ? " active" : "")} onClick={() => setTypeFilter("all")}>Todo</button>
+                <button className={"pill-btn" + (typeFilter === "income" ? " active" : "")} onClick={() => setTypeFilter("income")}>Ingresos</button>
+                <button className={"pill-btn" + (typeFilter === "expense" ? " active" : "")} onClick={() => setTypeFilter("expense")}>Gastos</button>
+                <input className="search-input" type="search" placeholder="Buscar…" aria-label="Buscar movimientos" value={searchText} onChange={(e) => setSearchText(e.target.value)} />
+              </div>
+              {registroSummary.usedCats.length > 1 && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {registroSummary.usedCats.map((name) => {
+                    const col = categoryColor(name);
+                    const on = catFilter === name;
+                    return (
+                      <button
+                        key={name}
+                        type="button"
+                        onClick={() => toggleCatFilter(name)}
+                        style={{ background: on ? col : col + "20", color: on ? "#fff" : col, border: "none", borderRadius: 999, padding: "4px 11px", fontFamily: FONT, fontSize: 12, fontWeight: 500, cursor: "pointer" }}
+                      >
+                        {name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <p style={{ fontSize: 11, letterSpacing: 1.4, textTransform: "uppercase", color: PALETTE.inkSoft, margin: "18px 0 0" }}>Registro ({filtered.length})</p>
+
+            {!dataLoaded ? (
+              <p style={{ fontSize: 13, color: PALETTE.inkSoft }}>Cargando movimientos...</p>
+            ) : loadError ? (
+              <div style={{ padding: "24px 0", textAlign: "center" }}>
+                <p style={{ fontFamily: FONT, fontSize: 18, color: PALETTE.expense, margin: "0 0 4px" }}>No se pudieron cargar tus movimientos</p>
+                <p style={{ fontSize: 13, color: PALETTE.inkSoft, margin: "0 0 14px" }}>Esto es un fallo de conexion, no significa que se hayan borrado. Recarga la pagina para intentarlo de nuevo.</p>
+                <button type="button" className="submit-btn" onClick={() => window.location.reload()}>Recargar</button>
+              </div>
+            ) : filtered.length === 0 ? (
+              <div style={{ padding: "32px 0", textAlign: "center" }}>
+                <p style={{ fontFamily: FONT, fontSize: 18, color: PALETTE.ink, margin: "0 0 4px" }}>{transactions.length === 0 ? "El registro esta vacio" : "Ningún movimiento con estos filtros"}</p>
+                <p style={{ fontSize: 13, color: PALETTE.inkSoft, margin: 0 }}>{transactions.length === 0 ? "Pulsa «Añadir movimiento» para empezar a llevar la cuenta." : "Prueba a cambiar el mes, la categoría o la búsqueda."}</p>
+              </div>
+            ) : (
+              <div>
+                {registroGroups.map((g) => {
+                  const d = new Date(g.date + "T00:00:00");
+                  return (
+                    <div key={g.date}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "20px 2px 8px", fontSize: 12, color: PALETTE.inkSoft }}>
+                        <strong style={{ color: PALETTE.ink, fontWeight: 600, fontSize: 13, textTransform: "capitalize" }}>{d.toLocaleDateString("es-ES", { weekday: "long" })} {d.getDate()}</strong>
+                        <span style={{ fontVariantNumeric: "tabular-nums" }}>{g.net >= 0 ? "+" : "-"}{formatMoney1(Math.abs(g.net))}</span>
+                      </div>
+                      {g.items.map((t, i) => {
+                        const catColor = categoryColor(t.category);
+                        return (
+                          <div key={t.id} className="tx-row" style={{ borderLeftColor: catColor, animationDelay: `${Math.min(i, 8) * 20}ms` }}>
+                            <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 3 }}>
+                              <span style={{ fontSize: 14.5, fontWeight: 500, color: PALETTE.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.description}</span>
+                              <span style={{ fontSize: 11, color: catColor, background: catColor + "22", padding: "2px 8px", borderRadius: 999, alignSelf: "flex-start", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%", fontWeight: 500 }}>
+                                {t.category}{t.subcategory ? ` › ${t.subcategory}` : ""}
+                              </span>
+                            </div>
+                            <span style={{ fontFamily: FONT, fontSize: 15, fontWeight: 600, letterSpacing: "-0.01em", textAlign: "right", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums", color: t.type === "income" ? PALETTE.income : PALETTE.expense }}>
+                              {t.type === "income" ? "+" : "-"}{formatMoney(t.amount)}
+                            </span>
+                            <div style={{ display: "flex", alignItems: "center", justifySelf: "end" }}>
+                              <button type="button" className="icon-btn" onClick={() => startEditTransaction(t)} aria-label="Editar movimiento">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" /></svg>
+                              </button>
+                              <button type="button" className="icon-btn danger" onClick={() => removeTransaction(t.id)} aria-label="Eliminar movimiento">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {txModalOpen && (
+              <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="tx-modal-title" onMouseDown={(e) => { if (e.target === e.currentTarget) cancelEditTransaction(); }}>
+                <div className="modal-card">
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                    <p id="tx-modal-title" style={{ fontFamily: FONT, fontSize: 18, fontWeight: 600, letterSpacing: "-0.01em", margin: 0, color: PALETTE.ink }}>{editingTxId ? "Editar movimiento" : "Añadir movimiento"}</p>
+                    <button type="button" className="icon-btn" onClick={cancelEditTransaction} aria-label="Cerrar">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                    </button>
+                  </div>
+                  <div style={{ display: "flex", gap: 0, marginBottom: 16 }}>
+                    <button type="button" className={"type-toggle" + (type === "expense" ? " active-expense" : "")} style={{ borderRadius: "6px 0 0 6px" }} onClick={() => setType("expense")}>Gasto</button>
+                    <button type="button" className={"type-toggle" + (type === "income" ? " active-income" : "")} style={{ borderRadius: "0 6px 6px 0", borderLeft: "none" }} onClick={() => setType("income")}>Ingreso</button>
+                  </div>
+                  <form onSubmit={addTransaction}>
+                    <div className="bigamt">
+                      <input type="text" inputMode="decimal" placeholder="0,00" aria-label="Importe" autoFocus value={amount} onChange={(e) => setAmount(e.target.value)} />
+                      <span style={{ fontSize: 20, color: PALETTE.inkSoft }}>€</span>
+                    </div>
+                    <div className="modal-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px 24px", marginBottom: 18 }}>
+                      <div>
+                        <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Categoria</label>
+                        <select className="ledger-select" value={category} onChange={(e) => {
+                          const nextCat = e.target.value;
+                          setCategory(nextCat);
+                          const sorted = (subConfig[nextCat] || []).slice().sort((a, b) => a.localeCompare(b, "es"));
+                          setSubcategory(sorted[0] || "");
+                        }}>
+                          {(catConfig[type] || []).map((c) => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Subcategoria</label>
+                        <select className="ledger-select" value={subcategory} onChange={(e) => setSubcategory(e.target.value)} disabled={!(subConfig[category] && subConfig[category].length)}>
+                          {(subConfig[category] || []).length === 0 && <option value="">Sin subcategorias</option>}
+                          {(subConfig[category] || []).slice().sort((a, b) => a.localeCompare(b, "es")).map((s) => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Fecha</label>
+                        <input className="ledger-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 11, color: PALETTE.inkSoft }}>Descripcion (opcional)</label>
+                        <input className="ledger-input" type="text" placeholder="Cafe con Marta" value={desc} onChange={(e) => setDesc(e.target.value)} />
+                      </div>
+                    </div>
+                    {formError && <p style={{ color: PALETTE.expense, fontSize: 13, margin: "0 0 12px" }}>{formError}</p>}
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                      <button type="submit" className="submit-btn" style={{ borderRadius: 6 }}>{editingTxId ? "Guardar cambios" : `Añadir ${type === "income" ? "ingreso" : "gasto"}`}</button>
+                      <button type="button" className="pill-btn" style={{ border: "none" }} onClick={cancelEditTransaction}>Cancelar</button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {toast && (
+              <div className="toast-msg" role="status" aria-live="polite">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={PALETTE.income === "#0F766E" ? "#34D399" : PALETTE.income} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="M8 12.5l2.7 2.7L16 9.8" /></svg>
+                <span>{toast}</span>
+              </div>
+            )}
           </>
         )}
 
@@ -1616,24 +1900,24 @@ export default function App() {
               </select>
             </section>
             <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, marginBottom: 20 }}>
-              <div style={{ background: PALETTE.paper, borderRadius: 4, padding: "16px 18px" }}>
+              <div style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "16px 18px" }}>
                 <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 6px" }}>Ingresos</p>
                 <p style={{ fontFamily: FONT, fontSize: 20, color: PALETTE.income, margin: 0 }}>{formatMoneyRound(resumenTotals.income)}</p>
               </div>
-              <div style={{ background: PALETTE.paper, borderRadius: 4, padding: "16px 18px" }}>
+              <div style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "16px 18px" }}>
                 <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 6px" }}>Gastos</p>
                 <p style={{ fontFamily: FONT, fontSize: 20, color: PALETTE.expense, margin: 0 }}>{formatMoneyRound(resumenTotals.expense)}</p>
               </div>
-              <div style={{ background: PALETTE.paper, borderRadius: 4, padding: "16px 18px" }}>
+              <div style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "16px 18px" }}>
                 <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 6px" }}>Ahorro</p>
                 <p style={{ fontFamily: FONT, fontSize: 20, color: resumenTotals.savings >= 0 ? PALETTE.income : PALETTE.expense, margin: 0 }}>{formatMoneyRound(resumenTotals.savings)}</p>
               </div>
-              <div style={{ background: PALETTE.paper, borderRadius: 4, padding: "16px 18px" }}>
+              <div style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "16px 18px" }}>
                 <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 6px" }}>Tasa de ahorro</p>
                 <p style={{ fontFamily: FONT, fontSize: 20, color: PALETTE.ink, margin: 0 }}>{resumenTotals.rate.toFixed(1)}%</p>
               </div>
             </section>
-            <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "24px 28px", marginBottom: 20 }}>
+            <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "24px 28px", marginBottom: 20 }}>
               <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 12px" }}>Ingresos vs gastos {resumenYear === "all" ? "por año" : "por mes"}</p>
               {resumenRows.every((r) => r.income === 0 && r.expense === 0) ? (
                 <p style={{ fontSize: 13, color: PALETTE.inkSoft }}>No hay datos para este periodo todavia.</p>
@@ -1652,7 +1936,7 @@ export default function App() {
                 </div>
               )}
             </section>
-            <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "24px 28px" }}>
+            <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "24px 28px" }}>
               <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 12px" }}>Ahorro {resumenYear === "all" ? "por año" : "por mes"}</p>
               {resumenRows.every((r) => r.income === 0 && r.expense === 0) ? (
                 <p style={{ fontSize: 13, color: PALETTE.inkSoft }}>No hay datos para este periodo todavia.</p>
@@ -1683,7 +1967,7 @@ export default function App() {
                 {yearsAvailable.map((y) => <option key={y} value={y}>{y}</option>)}
               </select>
             </section>
-            <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "24px 32px", marginBottom: 20 }}>
+            <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "24px 32px", marginBottom: 20 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
                 <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: 0 }}>Gasto por categoria</p>
                 <p style={{ fontFamily: FONT, fontSize: 15, color: PALETTE.ink, margin: 0 }}>{formatMoneyRound(catTotal)}</p>
@@ -1710,7 +1994,7 @@ export default function App() {
               )}
             </section>
             {activeCatName && (
-              <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "24px 28px" }}>
+              <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "24px 28px" }}>
                 <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 12px" }}>Evolucion de {activeCatName.toLowerCase()} {catYear === "all" ? "por año" : "por mes"}</p>
                 <div style={{ width: "100%", height: 200 }}>
                   <ResponsiveContainer>
@@ -1727,7 +2011,7 @@ export default function App() {
             )}
 
             {activeCatName && subBreakdown.length > 0 && (
-              <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "24px 28px", marginTop: 20 }}>
+              <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "24px 28px", marginTop: 20 }}>
                 <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 4px" }}>
                   Desglose de {activeCatName.toLowerCase()} por subcategoria
                 </p>
@@ -1763,7 +2047,7 @@ export default function App() {
             )}
 
             {activeCatName && subSelected && (
-              <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "24px 28px", marginTop: 20 }}>
+              <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "24px 28px", marginTop: 20 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
                   <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: 0 }}>
                     Evolucion de {subSelected.toLowerCase()} {catYear === "all" ? "por año" : "por mes"}
@@ -1792,7 +2076,7 @@ export default function App() {
 
         {activeTab === "patrimonio" && (
           <>
-            <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "24px 28px", marginBottom: 20 }}>
+            <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "24px 28px", marginBottom: 20 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
                 <div>
                   <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 6px" }}>Patrimonio total</p>
@@ -1838,7 +2122,7 @@ export default function App() {
               {netWorthError && <p style={{ fontSize: 12, color: PALETTE.expense, margin: "14px 0 0" }}>{netWorthError}</p>}
             </section>
 
-            <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "20px 24px", marginBottom: 20 }}>
+            <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "20px 24px", marginBottom: 20 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
                 <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: 0 }}>Cuentas y activos manuales</p>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -1888,7 +2172,7 @@ export default function App() {
               )}
             </section>
 
-            <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "20px 24px", marginBottom: 20 }}>
+            <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "20px 24px", marginBottom: 20 }}>
               <div
                 onClick={() => setAssetHistoryOpen(!assetHistoryOpen)}
                 style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", marginBottom: assetHistoryOpen ? 14 : 0 }}
@@ -2102,7 +2386,7 @@ export default function App() {
 
         {activeTab === "evolucion" && (
           <>
-            <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "24px 28px", marginBottom: 20 }}>
+            <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "24px 28px", marginBottom: 20 }}>
               <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 6px" }}>Patrimonio total (hoy)</p>
               <p style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 32, fontWeight: 600, color: PALETTE.ink, margin: 0 }}>
                 {netWorthLoaded ? formatMoneyRound(netWorthTotal) : "..."}
@@ -2121,7 +2405,7 @@ export default function App() {
             </section>
 
             {netWorthChartData.length > 1 && (
-              <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "24px 28px", marginBottom: 20 }}>
+              <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "24px 28px", marginBottom: 20 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 10 }}>
                   <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: 0 }}>Evolucion del patrimonio</p>
                   <select className="pill-btn" style={{ cursor: "pointer", background: PALETTE.paper }} value={pnlYear} onChange={(e) => setPnlYear(e.target.value)}>
@@ -2173,7 +2457,7 @@ export default function App() {
               </section>
             )}
 
-            <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "24px 28px", marginBottom: 20 }}>
+            <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "24px 28px", marginBottom: 20 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, flexWrap: "wrap", gap: 10 }}>
                 <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: 0 }}>Beneficios / perdidas: acumulado</p>
                 <select className="pill-btn" style={{ cursor: "pointer", background: PALETTE.paper }} value={pnlYear} onChange={(e) => setPnlYear(e.target.value)}>
@@ -2213,7 +2497,7 @@ export default function App() {
               )}
             </section>
 
-            <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "24px 28px" }}>
+            <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "24px 28px" }}>
               <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 4px" }}>Beneficios / perdidas: neto por periodo</p>
               <p style={{ fontSize: 11, color: PALETTE.inkSoft, margin: "0 0 12px" }}>
                 Lo ganado o perdido solo en ese mes o ano, sin arrastrar lo de periodos anteriores. Usa el mismo selector de arriba.
@@ -2250,7 +2534,7 @@ export default function App() {
               </div>
               <button type="button" className="submit-btn" onClick={exportBackup} disabled={transactions.length === 0}>Descargar mis datos</button>
             </section>
-            <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "20px 24px", marginBottom: 20 }}>
+            <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "20px 24px", marginBottom: 20 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
                 <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: 0 }}>Editor de categorias</p>
                 <button
@@ -2320,7 +2604,7 @@ export default function App() {
               </div>
             )}
 
-            <section style={{ background: PALETTE.paper, borderRadius: 4, padding: "24px 32px" }}>
+            <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "24px 32px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
                 <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: 0 }}>Subcategorias</p>
                 {subEditCategory && (
