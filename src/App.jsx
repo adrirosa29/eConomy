@@ -1243,15 +1243,10 @@ export default function App() {
   }
 
   // ---------- Registro tab derived data ----------
-  const monthsAvailable = useMemo(() => {
-    const set = new Set(transactions.map((t) => t.date.slice(0, 7)));
-    set.add(CURRENT_MONTH_KEY);
-    return Array.from(set).sort().reverse();
-  }, [transactions]);
-  const registroYears = useMemo(() => {
-    const set = new Set(transactions.map((t) => t.date.slice(0, 4)));
-    set.add(CURRENT_YEAR);
-    return Array.from(set).sort().reverse();
+  const registroMinYear = useMemo(() => {
+    let y = parseInt(CURRENT_YEAR, 10);
+    transactions.forEach((t) => { const ty = parseInt(t.date.slice(0, 4), 10); if (ty < y) y = ty; });
+    return y;
   }, [transactions]);
   const filtered = useMemo(() => transactions
     .filter((t) => {
@@ -1470,6 +1465,12 @@ export default function App() {
       .add-btn { display: inline-flex; align-items: center; gap: 8px; border-radius: 8px; padding: 11px 18px; font-weight: 500; font-size: 13.5px; box-shadow: 0 6px 16px -8px ${PALETTE.gold}; }
       .month-select { font-family: ${FONT}; font-weight: 700; font-size: 22px; letter-spacing: -0.02em; color: ${PALETTE.ink}; background: none; border: none; padding: 0; cursor: pointer; outline: none; text-transform: capitalize; }
       .month-select option { font-size: 14px; font-weight: 400; text-transform: capitalize; }
+      .seg-period { display: inline-flex; background: ${PALETTE.paperDim}; border-radius: 999px; padding: 3px; }
+      .seg-period button { border: none; background: none; padding: 6px 16px; border-radius: 999px; font-family: ${FONT}; font-size: 13px; font-weight: 600; color: ${PALETTE.inkSoft}; cursor: pointer; }
+      .seg-period button.on { background: ${PALETTE.paper}; color: ${PALETTE.ink}; box-shadow: 0 1px 3px rgba(0,0,0,.14); }
+      .arrow-btn { width: 32px; height: 32px; border-radius: 50%; border: 1px solid ${PALETTE.rule}; background: none; display: grid; place-items: center; color: ${PALETTE.inkSoft}; cursor: pointer; }
+      .arrow-btn:hover:not(:disabled) { background: ${PALETTE.paperDim}; color: ${PALETTE.ink}; }
+      .arrow-btn:disabled { opacity: 0.35; cursor: default; }
       .icon-btn { background: none; border: none; width: 30px; height: 30px; border-radius: 6px; color: ${PALETTE.inkSoft}; display: grid; place-items: center; cursor: pointer; opacity: 0.75; transition: background 0.15s, color 0.15s, opacity 0.15s; }
       .icon-btn:hover { background: ${PALETTE.paperDim}; color: ${PALETTE.ink}; opacity: 1; }
       .icon-btn.danger:hover { color: ${PALETTE.expense}; }
@@ -1607,6 +1608,34 @@ export default function App() {
   function toggleCatFilter(name) { setCatFilter((cur) => (cur === name ? null : name)); }
   const registroBalance = registroSummary.income - registroSummary.expense;
 
+  // Selector de periodo: Mes / Año / Todo con flechas. Los periodos futuros nunca se pueden elegir.
+  const curYearNum = parseInt(CURRENT_YEAR, 10);
+  const periodMode = monthFilter === "all" ? "all" : monthFilter.startsWith("year:") ? "year" : "month";
+  const periodYear = periodMode === "year" ? parseInt(monthFilter.slice(5), 10) : periodMode === "month" ? parseInt(monthFilter.slice(0, 4), 10) : curYearNum;
+  const periodMonth = periodMode === "month" ? parseInt(monthFilter.slice(5, 7), 10) - 1 : CURRENT_MONTH_INDEX;
+  const canPrevPeriod = periodMode === "month" ? (periodYear > registroMinYear || periodMonth > 0) : periodMode === "year" ? periodYear > registroMinYear : false;
+  const canNextPeriod = periodMode === "month" ? (periodYear < curYearNum || periodMonth < CURRENT_MONTH_INDEX) : periodMode === "year" ? periodYear < curYearNum : false;
+  const periodLabel = periodMode === "all" ? "Histórico completo" : periodMode === "year" ? `Año ${periodYear}` : `${MONTHS[periodMonth]} ${periodYear}`;
+  const monthKeyOf = (y, m) => `${y}-${String(m + 1).padStart(2, "0")}`;
+  function changePeriodMode(mode) {
+    setCatFilter(null);
+    if (mode === "all") setMonthFilter("all");
+    else if (mode === "year") setMonthFilter("year:" + periodYear);
+    else {
+      const m = periodMode === "month" ? periodMonth : (periodYear === curYearNum ? CURRENT_MONTH_INDEX : 11);
+      setMonthFilter(monthKeyOf(periodYear, m));
+    }
+  }
+  function stepPeriod(d) {
+    setCatFilter(null);
+    if (periodMode === "year") { setMonthFilter("year:" + (periodYear + d)); return; }
+    if (periodMode !== "month") return;
+    let y = periodYear, m = periodMonth + d;
+    if (m > 11) { m = 0; y += 1; }
+    if (m < 0) { m = 11; y -= 1; }
+    setMonthFilter(monthKeyOf(y, m));
+  }
+
   return (
     <div style={{ fontFamily: FONT, background: PALETTE.cover, minHeight: "100vh", color: PALETTE.ink }}>
       {sharedStyle}
@@ -1688,16 +1717,20 @@ export default function App() {
 
             <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "22px 24px", marginBottom: 18 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
-                <select className="month-select" value={monthFilter} onChange={(e) => { setMonthFilter(e.target.value); setCatFilter(null); }} aria-label="Mes">
-                  <option value="all">Todos los meses</option>
-                  <optgroup label="Año completo">
-                    {registroYears.map((y) => <option key={y} value={"year:" + y}>{monthLabel("year:" + y)}</option>)}
-                  </optgroup>
-                  <optgroup label="Por mes">
-                    {monthsAvailable.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
-                  </optgroup>
-                </select>
-                <p style={{ fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: PALETTE.inkSoft, margin: 0 }}>Gastos por categoría</p>
+                <div className="seg-period" role="group" aria-label="Tipo de periodo">
+                  {[["month", "Mes"], ["year", "Año"], ["all", "Todo"]].map(([id, text]) => (
+                    <button key={id} type="button" className={periodMode === id ? "on" : ""} onClick={() => changePeriodMode(id)}>{text}</button>
+                  ))}
+                </div>
+                <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <button type="button" className="arrow-btn" onClick={() => stepPeriod(-1)} disabled={!canPrevPeriod} aria-label="Periodo anterior">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
+                  </button>
+                  <span style={{ minWidth: 150, textAlign: "center", fontFamily: FONT, fontSize: 17, fontWeight: 700, letterSpacing: "-0.01em", textTransform: "capitalize", color: PALETTE.ink }}>{periodLabel}</span>
+                  <button type="button" className="arrow-btn" onClick={() => stepPeriod(1)} disabled={!canNextPeriod} aria-label="Periodo siguiente">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6" /></svg>
+                  </button>
+                </div>
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12, paddingBottom: 20, marginBottom: 22, borderBottom: `1px solid ${PALETTE.rule}` }}>
