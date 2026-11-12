@@ -238,6 +238,7 @@ const rsDot = (n) => Math.abs(Math.round(n)).toString().replace(/\B(?=(\d{3})+(?
 const rsMoney = (n) => (Math.round(n) < 0 ? "−" : "") + rsDot(n) + " €";
 const rsSigned = (n) => (Math.round(n) < 0 ? "−" : "+") + rsDot(n) + " €";
 const rsK = (n) => (n < 0 ? "−" : "") + (Math.abs(n) / 1000).toFixed(1).replace(".", ",") + "k";
+const rsShort = (v) => { const a = Math.abs(v); const t = a >= 1000 ? (a / 1000).toFixed(a % 1000 === 0 ? 0 : 1).replace(".", ",") + "k" : String(Math.round(a)); return (v < 0 ? "−" : "") + t; };
 const rsPct = (n, d = 1) => n.toFixed(d).replace(".", ",");
 
 function rsNice(min, max) {
@@ -271,7 +272,7 @@ function rsEndLabels(items, x) {
 }
 
 // Agrega ingresos/gastos por mes de un anio y calcula comparativas y proyeccion de fin de mes.
-function buildResumen(realized, yearStr) {
+function buildResumen(realized, yearStr, monthProj) {
   const y = Number(yearStr), part = yearStr === CURRENT_YEAR, todayDay = TODAY.getDate();
   const agg = (yr) => {
     const inc = new Array(12).fill(0), exp = new Array(12).fill(0), pre = { inc: 0, exp: 0 };
@@ -305,6 +306,14 @@ function buildResumen(realized, yearStr) {
     const e = exp[n - 1];
     expP[n - 1] = Math.max(e, avgFrac > 0.08 ? e / avgFrac : e / frac);
     if (hist.length) incP[n - 1] = Math.max(inc[n - 1], hist.slice(-3).reduce((s, h) => s + h.inc, 0) / Math.min(3, hist.length));
+    if (monthProj !== null && monthProj !== undefined && !isNaN(monthProj)) {
+      // Mismo balance previsto a fin de mes que "Ritmo del mes": ingresos - gastos = monthProj.
+      const e0 = exp[n - 1], i0 = inc[n - 1];
+      let ip = incP[n - 1], ep = ip - monthProj;
+      if (ep < e0) { ep = e0; ip = e0 + monthProj; }
+      if (ip < i0) { ip = i0; ep = Math.max(e0, ip - monthProj); }
+      incP[n - 1] = ip; expP[n - 1] = ep;
+    }
   }
   const sav = inc.map((v, i) => v - exp[i]), savP = incP.map((v, i) => v - expP[i]);
   const rateP = incP.map((v, i) => (v > 0 ? (savP[i] / v) * 100 : 0));
@@ -322,8 +331,8 @@ function buildResumen(realized, yearStr) {
   return o;
 }
 
-function ResumenCharts({ realized, year, pal, font }) {
-  const s = useMemo(() => buildResumen(realized, year), [realized, year]);
+function ResumenCharts({ realized, year, pal, font, monthProj }) {
+  const s = useMemo(() => buildResumen(realized, year, monthProj), [realized, year, monthProj]);
   const [tab, setTab] = useState("S");
   const [goal, setGoal] = useState(() => { try { const v = parseInt(localStorage.getItem("myfunds_goal_rate"), 10); return isNaN(v) ? 20 : v; } catch (e) { return 20; } });
   useEffect(() => { try { localStorage.setItem("myfunds_goal_rate", String(goal)); } catch (e) { /* sin almacenamiento */ } }, [goal]);
@@ -336,7 +345,7 @@ function ResumenCharts({ realized, year, pal, font }) {
     if (!has) return undefined;
     const C = () => ctx.current;
     const geo = (W, MRo) => {
-      const narrow = W < 480, base = narrow ? 250 : 240, ML = narrow ? 40 : 46, MR = MRo || (narrow ? 8 : 12), MT = 12, MB = 24, PW = W - ML - MR, bw = PW / 12;
+      const narrow = W < 480, base = narrow ? 260 : 240, ML = narrow ? 32 : 46, MR = MRo || (narrow ? 6 : 12), MT = 12, MB = 24, PW = W - ML - MR, bw = PW / 12;
       return { W, H: base, ML, MR, MT, MB, PW, PH: base - MT - MB, bw, narrow, cx: (i) => ML + bw * (i + 0.5), xf: (t) => ML + (PW * t) / 12 };
     };
     const frame = (g, dom, fmt, hi) => {
@@ -344,7 +353,7 @@ function ResumenCharts({ realized, year, pal, font }) {
       let o = "";
       if (hi !== undefined && hi !== null) o += '<rect x="' + (g.ML + g.bw * hi) + '" y="' + g.MT + '" width="' + g.bw + '" height="' + g.PH + '" rx="6" fill="var(--dim)" opacity=".85"/>';
       dom.ticks.forEach((t) => { o += '<line x1="' + g.ML + '" x2="' + (g.W - g.MR) + '" y1="' + y(t) + '" y2="' + y(t) + '" stroke="' + (t === 0 ? "var(--soft)" : "var(--line)") + '" opacity="' + (t === 0 ? ".75" : "1") + '"/><text x="' + (g.ML - 7) + '" y="' + (y(t) + 3.5) + '" text-anchor="end">' + fmt(t) + "</text>"; });
-      for (let i = 0; i < 12; i++) o += '<text x="' + g.cx(i) + '" y="' + (g.MT + g.PH + 16) + '" text-anchor="middle"' + (i === hi ? ' style="fill:var(--ink);font-weight:800"' : "") + ">" + RS_MN[i] + "</text>";
+      for (let i = 0; i < 12; i++) o += '<text x="' + g.cx(i) + '" y="' + (g.MT + g.PH + 16) + '" text-anchor="middle"' + (i === hi ? ' style="fill:var(--ink);font-weight:800"' : "") + ">" + (g.narrow ? RS_MN[i][0].toUpperCase() : RS_MN[i]) + "</text>";
       return { y, svg: o };
     };
     const mk = (el, draw, tip) => {
@@ -379,10 +388,10 @@ function ResumenCharts({ realized, year, pal, font }) {
     const h1 = mk(refs[0].current, (W, st) => {
       const { s: S } = C(), n = S.n, g = geo(W, 0); g.MT = 54; g.PH -= 42; g.maxI = n - 1;
       const dom = rsNice(-Math.max(...S.expP), Math.max(...S.incP) * 1.12);
-      const f = frame(g, dom, (v) => rsDot(Math.abs(v)), S.cur); let out = f.svg;
+      const f = frame(g, dom, (v) => (g.narrow ? rsShort(Math.abs(v)) : rsDot(Math.abs(v))), S.cur); let out = f.svg;
       const bw = Math.min(g.bw * 0.56, 22);
       const rect = (x, ya, yb, w, fill, op, dash, stroke) => '<rect x="' + x + '" y="' + Math.min(ya, yb) + '" width="' + w + '" height="' + Math.max(Math.abs(yb - ya), 0.5) + '" rx="2" fill="' + (dash ? "none" : fill) + '" opacity="' + op + '"' + (dash ? ' stroke="' + stroke + '" stroke-width="1.4" stroke-dasharray="3 3"' : "") + "/>";
-      out += '<text x="' + g.ML + '" y="10" style="font-size:10px;font-weight:700">Ahorro del mes</text><rect x="' + g.ML + '" y="16" width="' + g.PW + '" height="24" rx="12" fill="var(--dim)" opacity=".7"/>';
+      out += '<text x="' + g.ML + '" y="10" style="font-size:10px;font-weight:700">Ahorro del mes' + (g.narrow ? " (miles de €)" : "") + '</text><rect x="' + g.ML + '" y="16" width="' + g.PW + '" height="24" rx="12" fill="var(--dim)" opacity=".7"/>';
       for (let i = 0; i < n; i++) {
         const cx = g.cx(i), cur = i === S.cur, o = st.i === null || st.i === i ? 1 : 0.35, x = cx - bw / 2, y0 = f.y(0), v = S.savP[i], c = v >= 0 ? "var(--pos)" : "var(--neg)";
         out += rect(x, y0, f.y(S.inc[i]), bw, "var(--pos)", 0.55 * o) + rect(x, y0, f.y(-S.exp[i]), bw, "var(--neg)", 0.62 * o);
@@ -390,8 +399,9 @@ function ResumenCharts({ realized, year, pal, font }) {
           if (S.incP[i] > S.inc[i]) out += rect(x + 0.7, f.y(S.inc[i]), f.y(S.incP[i]), bw - 1.4, "", o, true, "var(--pos)");
           out += rect(x + 0.7, f.y(-S.exp[i]), f.y(-S.expP[i]), bw - 1.4, "", o, true, "var(--neg)");
         }
-        const pw = Math.min(g.bw - 5, 30);
-        out += '<rect x="' + (cx - pw / 2) + '" y="19.5" width="' + pw + '" height="17" rx="8.5" fill="' + c + '" opacity="' + 0.16 * o + '"/><text x="' + cx + '" y="31.5" text-anchor="middle" style="font-size:' + (g.narrow ? 8 : 9.5) + "px;fill:" + c + ";font-weight:800;opacity:" + o + '">' + rsK(v) + "</text>";
+        const pw = Math.min(g.bw - 5, 30), lab = g.narrow ? (v < 0 ? "−" : "") + (Math.abs(v) / 1000).toFixed(1).replace(".", ",") : rsK(v);
+        if (!g.narrow) out += '<rect x="' + (cx - pw / 2) + '" y="19.5" width="' + pw + '" height="17" rx="8.5" fill="' + c + '" opacity="' + 0.16 * o + '"/>';
+        out += '<text x="' + cx + '" y="31.5" text-anchor="middle" style="font-size:' + (g.narrow ? 9 : 9.5) + "px;fill:" + c + ";font-weight:800;opacity:" + o + '">' + lab + "</text>";
       }
       return { g, svg: out };
     }, (i) => {
@@ -404,26 +414,27 @@ function ResumenCharts({ realized, year, pal, font }) {
     // linea acumulada: hecho + proyeccion a fin del mes actual + anio anterior hasta el mismo punto
     const cumChart = (key) => (W) => {
       const { s: S } = C(); if (key === "E" && !S.hasPrev) return null;
-      const g = geo(W, W < 480 ? 64 : 72), n = S.n, closed = S.part ? n - 1 : n;
+      const g = geo(W, W < 480 ? 46 : 72), n = S.n, closed = S.part ? n - 1 : n;
       const mine = key === "E" ? S.cumE : S.cumSP, prev = S.hasPrev ? (key === "E" ? S.pcum : S.pcumS) : null;
       const endV = S.part ? (key === "E" ? S.projEnd : S.cumSP[n - 1]) : mine[n - 1];
       let vals = mine.slice(0, closed).concat([endV]); if (prev) vals = vals.concat(prev.slice(0, n));
-      const dom = rsNice(Math.min(...vals), Math.max(...vals)), f = frame(g, dom, (v) => (v < 0 ? "−" : "") + rsDot(v), S.cur); let out = f.svg;
+      const dom = rsNice(Math.min(...vals), Math.max(...vals)), f = frame(g, dom, (v) => (g.narrow ? rsShort(v) : (v < 0 ? "−" : "") + rsDot(v)), S.cur); let out = f.svg;
+      const lab = (v) => (g.narrow ? rsShort(v) : rsDot(v));
       g.maxI = n - 1;
       const pts = [[g.xf(0), f.y(0)]]; for (let i = 0; i < closed; i++) pts.push([g.xf(i + 1), f.y(mine[i])]);
       const lx = g.xf(closed), ly = f.y(closed ? mine[closed - 1] : 0), items = [];
       if (prev) {
         const pp = [[g.xf(0), f.y(0)]]; for (let i = 0; i < n; i++) pp.push([g.xf(i + 1), f.y(prev[i])]);
         out += '<path d="' + rsSmooth(pp) + '" fill="none" stroke="var(--prev)" stroke-width="1.8" opacity=".8" stroke-linejoin="round"/>';
-        items.push({ t: rsDot(prev[n - 1]), y: f.y(prev[n - 1]), c: "var(--prev)", w: 700 });
+        items.push({ t: lab(prev[n - 1]), y: f.y(prev[n - 1]), c: "var(--prev)", w: 700 });
       }
       if (key === "S") out += '<defs><linearGradient id="rsgg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--pos)" stop-opacity=".30"/><stop offset="1" stop-color="var(--pos)" stop-opacity=".02"/></linearGradient></defs><path d="' + rsSmooth(pts) + "L" + lx + " " + f.y(0) + "L" + g.xf(0) + " " + f.y(0) + 'Z" fill="url(#rsgg)"/>';
       out += '<path d="' + rsSmooth(pts) + '" fill="none" stroke="var(--pos)" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/>';
       const ex = g.xf(n), ey = f.y(endV);
       if (S.part) {
         out += '<path d="M' + lx.toFixed(1) + " " + ly.toFixed(1) + "L" + ex.toFixed(1) + " " + ey.toFixed(1) + '" fill="none" stroke="var(--pos)" stroke-width="3" stroke-dasharray="2 6" stroke-linecap="round"/><circle cx="' + ex + '" cy="' + ey + '" r="4.8" fill="var(--surface)" stroke="var(--pos)" stroke-width="2.4"/>';
-        items.push({ t: "≈ " + rsDot(endV), y: ey, c: "var(--pos)", w: 800 });
-      } else { out += '<circle cx="' + ex + '" cy="' + ey + '" r="4.8" fill="var(--pos)" stroke="var(--surface)" stroke-width="2"/>'; items.push({ t: rsDot(endV), y: ey, c: "var(--pos)", w: 800 }); }
+        items.push({ t: "≈" + lab(endV), y: ey, c: "var(--pos)", w: 800 });
+      } else { out += '<circle cx="' + ex + '" cy="' + ey + '" r="4.8" fill="var(--pos)" stroke="var(--surface)" stroke-width="2"/>'; items.push({ t: lab(endV), y: ey, c: "var(--pos)", w: 800 }); }
       out += rsEndLabels(items, ex + 9);
       return { g, svg: out };
     };
@@ -451,7 +462,7 @@ function ResumenCharts({ realized, year, pal, font }) {
       const pts = r.map((v, k) => [g.cx(k), f.y(v)]), last = S.part ? n - 1 : n;
       out += '<path d="' + rsSmooth(pts.slice(0, last)) + '" fill="none" stroke="var(--pos)" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round"/>';
       if (S.part && last > 0) out += '<path d="' + rsSmooth(pts.slice(last - 1)) + '" fill="none" stroke="var(--pos)" stroke-width="2.8" stroke-dasharray="2 5" stroke-linecap="round"/>';
-      for (let i = 0; i < n; i++) { const ok = r[i] >= G, pc = i === S.cur; out += '<circle cx="' + pts[i][0] + '" cy="' + pts[i][1] + '" r="' + (st.i === i ? 5 : 3.8) + '" fill="' + (ok && !pc ? "var(--pos)" : "var(--surface)") + '" stroke="' + (ok ? "var(--pos)" : "var(--neg)") + '" stroke-width="2.2"' + (pc ? ' stroke-dasharray="2 2"' : "") + "/>"; }
+      for (let i = 0; i < n; i++) { const ok = r[i] >= G, pc = i === S.cur; out += '<circle cx="' + pts[i][0] + '" cy="' + pts[i][1] + '" r="' + (st.i === i ? 5 : (g.narrow ? 3.2 : 3.8)) + '" fill="' + (ok && !pc ? "var(--pos)" : "var(--surface)") + '" stroke="' + (ok ? "var(--pos)" : "var(--neg)") + '" stroke-width="2.2"' + (pc ? ' stroke-dasharray="2 2"' : "") + "/>"; }
       return { g, svg: out };
     }, (i) => {
       const { s: S, goal: G, year: Y } = C(), r = S.rateP[i], cur = i === S.cur;
@@ -486,7 +497,7 @@ function ResumenCharts({ realized, year, pal, font }) {
     .rs .rs-step button { width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--line); background: none; color: var(--soft); cursor: pointer; font-family: var(--rs-font); line-height: 1; }
     .rs .rs-step b { color: var(--ink); min-width: 34px; text-align: center; font-variant-numeric: tabular-nums; }
     .rs .rs-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
-    @media (max-width: 640px) { .rs .rs-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .rs .rs-card { padding: 16px 10px 12px; } }
+    @media (max-width: 640px) { .rs .rs-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .rs .rs-card { padding: 14px 4px 10px; } .rs .rs-card > div:first-child { padding: 0 8px; } }
   `;
   if (!has) return <p style={{ fontSize: 13, color: pal.soft }}>No hay datos para este periodo todavia.</p>;
 
@@ -1654,6 +1665,20 @@ export default function App() {
     [ritmoSeries, resumenYear]
   );
 
+  // Balance previsto a fin del mes en curso (misma formula que "Ritmo del mes"): forma media de los demas meses del anio.
+  const monthEndProj = useMemo(() => {
+    const cur = ritmoSeries[CURRENT_MONTH_KEY];
+    if (!cur || !cur.length) return null;
+    const others = Object.keys(ritmoSeries).filter((k) => k !== CURRENT_MONTH_KEY && k.slice(0, 4) === CURRENT_YEAR);
+    if (!others.length) return null;
+    const avgAt = (d) => { const v = others.map((k) => ritmoSeries[k][d - 1]).filter((x) => x !== undefined); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+    const a0 = avgAt(cur.length);
+    let last = null;
+    for (let d = cur.length; d <= 31; d++) { const a = avgAt(d); if (a === null) break; last = a; }
+    if (a0 === null || last === null) return null;
+    return cur[cur.length - 1] + (last - a0);
+  }, [ritmoSeries]);
+
   const yearsAvailable = useMemo(() => {
     const set = new Set(realized.map((t) => t.date.slice(0, 4)));
     return Array.from(set).sort().reverse();
@@ -2445,7 +2470,7 @@ export default function App() {
             </section>
               </>
             ) : (
-              <ResumenCharts realized={realized} year={resumenYear} font={FONT} pal={{ pos: PALETTE.income, neg: PALETTE.expense, ink: PALETTE.ink, soft: PALETTE.inkSoft, line: PALETTE.rule, surface: PALETTE.paper, dim: PALETTE.paperDim, gold: mode === "dark" ? "#E5B93C" : "#CA8A04", prev: mode === "dark" ? "#86A3D4" : "#7F9BC4", shadow: PALETTE.shadow }} />
+              <ResumenCharts realized={realized} year={resumenYear} font={FONT} monthProj={monthEndProj} pal={{ pos: PALETTE.income, neg: PALETTE.expense, ink: PALETTE.ink, soft: PALETTE.inkSoft, line: PALETTE.rule, surface: PALETTE.paper, dim: PALETTE.paperDim, gold: mode === "dark" ? "#E5B93C" : "#CA8A04", prev: mode === "dark" ? "#86A3D4" : "#7F9BC4", shadow: PALETTE.shadow }} />
             )}
             <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, marginTop: 20 }} className="ritmo-card">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
