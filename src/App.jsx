@@ -232,6 +232,331 @@ function EyeIcon({ open, size = 16, color }) {
   );
 }
 
+// ---------------- Resumen (graficos del anio) ----------------
+const RS_MN = MONTHS_SHORT;
+const rsDot = (n) => Math.abs(Math.round(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+const rsMoney = (n) => (Math.round(n) < 0 ? "−" : "") + rsDot(n) + " €";
+const rsSigned = (n) => (Math.round(n) < 0 ? "−" : "+") + rsDot(n) + " €";
+const rsK = (n) => (n < 0 ? "−" : "") + (Math.abs(n) / 1000).toFixed(1).replace(".", ",") + "k";
+const rsPct = (n, d = 1) => n.toFixed(d).replace(".", ",");
+
+function rsNice(min, max) {
+  const lo = Math.min(0, min), hi = Math.max(0, max);
+  const raw = ((hi - lo) || 1) / 4, mag = Math.pow(10, Math.floor(Math.log10(raw))), q = raw / mag;
+  const step = (q <= 1 ? 1 : q <= 2 ? 2 : q <= 5 ? 5 : 10) * mag;
+  const a = Math.floor(lo / step) * step, b = Math.ceil(hi / step) * step, ticks = [];
+  for (let v = a; v <= b + step / 2; v += step) ticks.push(Math.round(v * 100) / 100);
+  return { min: a, max: b, ticks };
+}
+function rsPath(p) { return p.map((q, k) => (k ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1)).join(""); }
+function rsSmooth(p) {
+  const n = p.length; if (n < 3) return rsPath(p);
+  const dx = [], m = [], t = [];
+  for (let i = 0; i < n - 1; i++) { dx.push(p[i + 1][0] - p[i][0]); m.push((p[i + 1][1] - p[i][1]) / dx[i]); }
+  t.push(m[0]); for (let i = 1; i < n - 1; i++) t.push(m[i - 1] * m[i] <= 0 ? 0 : (m[i - 1] + m[i]) / 2); t.push(m[n - 2]);
+  for (let i = 0; i < n - 1; i++) {
+    if (m[i] === 0) { t[i] = 0; t[i + 1] = 0; } else {
+      const a = t[i] / m[i], b = t[i + 1] / m[i], h = a * a + b * b;
+      if (h > 9) { const k = 3 / Math.sqrt(h); t[i] = k * a * m[i]; t[i + 1] = k * b * m[i]; }
+    }
+  }
+  let d = "M" + p[0][0].toFixed(1) + " " + p[0][1].toFixed(1);
+  for (let i = 0; i < n - 1; i++) d += "C" + (p[i][0] + dx[i] / 3).toFixed(1) + " " + (p[i][1] + t[i] * dx[i] / 3).toFixed(1) + " " + (p[i + 1][0] - dx[i] / 3).toFixed(1) + " " + (p[i + 1][1] - t[i + 1] * dx[i] / 3).toFixed(1) + " " + p[i + 1][0].toFixed(1) + " " + p[i + 1][1].toFixed(1);
+  return d;
+}
+function rsEndLabels(items, x) {
+  items.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < items.length; i++) if (items[i].y - items[i - 1].y < 13) items[i].y = items[i - 1].y + 13;
+  return items.map((l) => '<text x="' + x + '" y="' + (l.y + 3.5) + '" style="fill:' + l.c + ";font-weight:" + l.w + ';font-size:11.5px">' + l.t + "</text>").join("");
+}
+
+// Agrega ingresos/gastos por mes de un anio y calcula comparativas y proyeccion de fin de mes.
+function buildResumen(realized, yearStr) {
+  const y = Number(yearStr), part = yearStr === CURRENT_YEAR, todayDay = TODAY.getDate();
+  const agg = (yr) => {
+    const inc = new Array(12).fill(0), exp = new Array(12).fill(0), pre = { inc: 0, exp: 0 };
+    realized.forEach((t) => {
+      if (t.date.slice(0, 4) !== String(yr)) return;
+      const mi = parseInt(t.date.slice(5, 7), 10) - 1, k = t.type === "income" ? "inc" : "exp";
+      (k === "inc" ? inc : exp)[mi] += t.amount;
+      if (t.date.slice(5) <= todayISO().slice(5)) pre[k] += t.amount;
+    });
+    return { inc, exp, pre };
+  };
+  const cur = agg(y), prevA = agg(y - 1);
+  const hasPrev = prevA.inc.some((v) => v > 0) || prevA.exp.some((v) => v > 0);
+  let n = 0;
+  for (let i = 0; i < 12; i++) if (cur.inc[i] > 0 || cur.exp[i] > 0) n = i + 1;
+  if (part) n = CURRENT_MONTH_INDEX + 1;
+  if (n === 0) return null;
+  const cm = CURRENT_MONTH_INDEX, dim = new Date(TODAY.getFullYear(), cm + 1, 0).getDate(), frac = todayDay / dim;
+  const inc = cur.inc.slice(0, n), exp = cur.exp.slice(0, n);
+  const incP = inc.slice(), expP = exp.slice();
+  if (part) {
+    // Proyeccion de fin de mes: el gasto sigue la forma media de los meses cerrados (alquiler, recibos...).
+    const byMonth = {};
+    realized.forEach((t) => { const k = t.date.slice(0, 7); if (k < CURRENT_MONTH_KEY) (byMonth[k] = byMonth[k] || []).push(t); });
+    const hist = Object.keys(byMonth).sort().slice(-6).map((k) => {
+      let tot = 0, upto = 0, inc2 = 0;
+      byMonth[k].forEach((t) => { if (t.type === "income") inc2 += t.amount; else { tot += t.amount; if (parseInt(t.date.slice(8, 10), 10) <= todayDay) upto += t.amount; } });
+      return { tot, upto, inc: inc2 };
+    }).filter((h) => h.tot > 0);
+    const avgFrac = hist.length ? hist.reduce((s, h) => s + h.upto / h.tot, 0) / hist.length : 0;
+    const e = exp[n - 1];
+    expP[n - 1] = Math.max(e, avgFrac > 0.08 ? e / avgFrac : e / frac);
+    if (hist.length) incP[n - 1] = Math.max(inc[n - 1], hist.slice(-3).reduce((s, h) => s + h.inc, 0) / Math.min(3, hist.length));
+  }
+  const sav = inc.map((v, i) => v - exp[i]), savP = incP.map((v, i) => v - expP[i]);
+  const rateP = incP.map((v, i) => (v > 0 ? (savP[i] / v) * 100 : 0));
+  const cumE = [], cumSP = []; let re = 0, rs = 0;
+  exp.forEach((v, i) => { re += v; cumE.push(re); rs += savP[i]; cumSP.push(rs); });
+  const o = { n, part, frac, inc, exp, incP, expP, sav, savP, rateP, cumE, cumSP, cur: part ? n - 1 : null, hasPrev, projEnd: cumE[n - 1] - exp[n - 1] + expP[n - 1], day: todayDay };
+  if (hasPrev) {
+    const pcum = [], pcumS = []; let a = 0, b = 0;
+    prevA.exp.forEach((v, i) => { a += v; pcum.push(a); b += prevA.inc[i] - v; pcumS.push(b); });
+    o.pcum = pcum; o.pcumS = pcumS;
+    o.prate = prevA.inc.map((v, i) => (v > 0 ? ((v - prevA.exp[i]) / v) * 100 : 0));
+    o.pI = part ? prevA.pre.inc : prevA.inc.slice(0, n).reduce((s, v) => s + v, 0);
+    o.pE = part ? prevA.pre.exp : prevA.exp.slice(0, n).reduce((s, v) => s + v, 0);
+  }
+  return o;
+}
+
+function ResumenCharts({ realized, year, pal, font }) {
+  const s = useMemo(() => buildResumen(realized, year), [realized, year]);
+  const [tab, setTab] = useState("S");
+  const [goal, setGoal] = useState(() => { try { const v = parseInt(localStorage.getItem("myfunds_goal_rate"), 10); return isNaN(v) ? 20 : v; } catch (e) { return 20; } });
+  useEffect(() => { try { localStorage.setItem("myfunds_goal_rate", String(goal)); } catch (e) { /* sin almacenamiento */ } }, [goal]);
+  const ctx = useRef({}); ctx.current = { s, goal, year };
+  const refs = [useRef(null), useRef(null), useRef(null), useRef(null)];
+  const hosts = useRef([]);
+  const has = !!s;
+
+  useEffect(() => {
+    if (!has) return undefined;
+    const C = () => ctx.current;
+    const geo = (W, MRo) => {
+      const narrow = W < 480, base = narrow ? 250 : 240, ML = narrow ? 40 : 46, MR = MRo || (narrow ? 8 : 12), MT = 12, MB = 24, PW = W - ML - MR, bw = PW / 12;
+      return { W, H: base, ML, MR, MT, MB, PW, PH: base - MT - MB, bw, narrow, cx: (i) => ML + bw * (i + 0.5), xf: (t) => ML + (PW * t) / 12 };
+    };
+    const frame = (g, dom, fmt, hi) => {
+      const y = (v) => g.MT + g.PH * (1 - (v - dom.min) / (dom.max - dom.min));
+      let o = "";
+      if (hi !== undefined && hi !== null) o += '<rect x="' + (g.ML + g.bw * hi) + '" y="' + g.MT + '" width="' + g.bw + '" height="' + g.PH + '" rx="6" fill="var(--dim)" opacity=".85"/>';
+      dom.ticks.forEach((t) => { o += '<line x1="' + g.ML + '" x2="' + (g.W - g.MR) + '" y1="' + y(t) + '" y2="' + y(t) + '" stroke="' + (t === 0 ? "var(--soft)" : "var(--line)") + '" opacity="' + (t === 0 ? ".75" : "1") + '"/><text x="' + (g.ML - 7) + '" y="' + (y(t) + 3.5) + '" text-anchor="end">' + fmt(t) + "</text>"; });
+      for (let i = 0; i < 12; i++) o += '<text x="' + g.cx(i) + '" y="' + (g.MT + g.PH + 16) + '" text-anchor="middle"' + (i === hi ? ' style="fill:var(--ink);font-weight:800"' : "") + ">" + RS_MN[i] + "</text>";
+      return { y, svg: o };
+    };
+    const mk = (el, draw, tip) => {
+      const st = { i: null, W: 0, g: null };
+      st.render = () => {
+        const W = Math.max(260, Math.round(el.clientWidth)); st.W = W;
+        const out = draw(W, st);
+        if (!out) { el.innerHTML = ""; return; }
+        st.g = out.g; el.innerHTML = '<svg class="rs-chart" viewBox="0 0 ' + W + " " + out.g.H + '" height="' + out.g.H + '" role="img">' + out.svg + "</svg>";
+        if (st.i !== null && tip) {
+          const t = tip(st.i);
+          if (t) { const d = document.createElement("div"); d.className = "rs-tip"; d.innerHTML = t; el.appendChild(d); const x = out.g.cx(st.i); d.style.left = Math.max(0, x + 12 + 148 > W ? x - 12 - 148 : x + 12) + "px"; }
+        }
+      };
+      const mv = (e) => {
+        if (!st.g) return; const sv = el.querySelector("svg"); if (!sv) return;
+        const r = sv.getBoundingClientRect(), x = ((e.clientX - r.left) / r.width) * st.W;
+        let i = Math.floor((x - st.g.ML) / st.g.bw); i = Math.max(0, Math.min(st.g.maxI !== undefined ? st.g.maxI : 11, i));
+        if (i !== st.i) { st.i = i; st.render(); }
+      };
+      const lv = () => { st.i = null; st.render(); };
+      el.addEventListener("pointermove", mv); el.addEventListener("pointerdown", mv); el.addEventListener("pointerleave", lv);
+      let ro = null;
+      if (typeof ResizeObserver !== "undefined") { ro = new ResizeObserver(() => { if (Math.round(el.clientWidth) !== st.W) st.render(); }); ro.observe(el); }
+      st.destroy = () => { el.removeEventListener("pointermove", mv); el.removeEventListener("pointerdown", mv); el.removeEventListener("pointerleave", lv); if (ro) ro.disconnect(); };
+      return st;
+    };
+    const hasTip = (rows) => rows;
+    void hasTip;
+
+    // 1: espejo (ingresos arriba, gastos abajo) + fila de ahorro
+    const h1 = mk(refs[0].current, (W, st) => {
+      const { s: S } = C(), n = S.n, g = geo(W, 0); g.MT = 54; g.PH -= 42; g.maxI = n - 1;
+      const dom = rsNice(-Math.max(...S.expP), Math.max(...S.incP) * 1.12);
+      const f = frame(g, dom, (v) => rsDot(Math.abs(v)), S.cur); let out = f.svg;
+      const bw = Math.min(g.bw * 0.56, 22);
+      const rect = (x, ya, yb, w, fill, op, dash, stroke) => '<rect x="' + x + '" y="' + Math.min(ya, yb) + '" width="' + w + '" height="' + Math.max(Math.abs(yb - ya), 0.5) + '" rx="2" fill="' + (dash ? "none" : fill) + '" opacity="' + op + '"' + (dash ? ' stroke="' + stroke + '" stroke-width="1.4" stroke-dasharray="3 3"' : "") + "/>";
+      out += '<text x="' + g.ML + '" y="10" style="font-size:10px;font-weight:700">Ahorro del mes</text><rect x="' + g.ML + '" y="16" width="' + g.PW + '" height="24" rx="12" fill="var(--dim)" opacity=".7"/>';
+      for (let i = 0; i < n; i++) {
+        const cx = g.cx(i), cur = i === S.cur, o = st.i === null || st.i === i ? 1 : 0.35, x = cx - bw / 2, y0 = f.y(0), v = S.savP[i], c = v >= 0 ? "var(--pos)" : "var(--neg)";
+        out += rect(x, y0, f.y(S.inc[i]), bw, "var(--pos)", 0.55 * o) + rect(x, y0, f.y(-S.exp[i]), bw, "var(--neg)", 0.62 * o);
+        if (cur) {
+          if (S.incP[i] > S.inc[i]) out += rect(x + 0.7, f.y(S.inc[i]), f.y(S.incP[i]), bw - 1.4, "", o, true, "var(--pos)");
+          out += rect(x + 0.7, f.y(-S.exp[i]), f.y(-S.expP[i]), bw - 1.4, "", o, true, "var(--neg)");
+        }
+        const pw = Math.min(g.bw - 5, 30);
+        out += '<rect x="' + (cx - pw / 2) + '" y="19.5" width="' + pw + '" height="17" rx="8.5" fill="' + c + '" opacity="' + 0.16 * o + '"/><text x="' + cx + '" y="31.5" text-anchor="middle" style="font-size:' + (g.narrow ? 8 : 9.5) + "px;fill:" + c + ";font-weight:800;opacity:" + o + '">' + rsK(v) + "</text>";
+      }
+      return { g, svg: out };
+    }, (i) => {
+      const { s: S } = C(), cur = i === S.cur;
+      return "<strong>" + RS_MN[i] + "</strong><div><span>Ingresos" + (cur && S.incP[i] > S.inc[i] ? " hoy" : "") + "</span><b>" + rsMoney(S.inc[i]) + "</b></div>" + (cur && S.incP[i] > S.inc[i] ? "<div><span>Fin de mes</span><b>≈ " + rsMoney(S.incP[i]) + "</b></div>" : "") +
+        "<div><span><i style='background:var(--neg);opacity:.6'></i>Gastos" + (cur ? " hoy" : "") + "</span><b>" + rsMoney(S.exp[i]) + "</b></div>" + (cur ? "<div><span>Fin de mes</span><b>≈ " + rsMoney(S.expP[i]) + "</b></div>" : "") +
+        "<div><span><i style='background:var(--ink)'></i>Ahorro" + (cur ? " proy." : "") + "</span><b class='" + (S.savP[i] >= 0 ? "p" : "n") + "'>" + rsSigned(S.savP[i]) + "</b></div>";
+    });
+
+    // linea acumulada: hecho + proyeccion a fin del mes actual + anio anterior hasta el mismo punto
+    const cumChart = (key) => (W) => {
+      const { s: S } = C(); if (key === "E" && !S.hasPrev) return null;
+      const g = geo(W, W < 480 ? 64 : 72), n = S.n, closed = S.part ? n - 1 : n;
+      const mine = key === "E" ? S.cumE : S.cumSP, prev = S.hasPrev ? (key === "E" ? S.pcum : S.pcumS) : null;
+      const endV = S.part ? (key === "E" ? S.projEnd : S.cumSP[n - 1]) : mine[n - 1];
+      let vals = mine.slice(0, closed).concat([endV]); if (prev) vals = vals.concat(prev.slice(0, n));
+      const dom = rsNice(Math.min(...vals), Math.max(...vals)), f = frame(g, dom, (v) => (v < 0 ? "−" : "") + rsDot(v), S.cur); let out = f.svg;
+      g.maxI = n - 1;
+      const pts = [[g.xf(0), f.y(0)]]; for (let i = 0; i < closed; i++) pts.push([g.xf(i + 1), f.y(mine[i])]);
+      const lx = g.xf(closed), ly = f.y(closed ? mine[closed - 1] : 0), items = [];
+      if (prev) {
+        const pp = [[g.xf(0), f.y(0)]]; for (let i = 0; i < n; i++) pp.push([g.xf(i + 1), f.y(prev[i])]);
+        out += '<path d="' + rsSmooth(pp) + '" fill="none" stroke="var(--prev)" stroke-width="1.8" opacity=".8" stroke-linejoin="round"/>';
+        items.push({ t: rsDot(prev[n - 1]), y: f.y(prev[n - 1]), c: "var(--prev)", w: 700 });
+      }
+      if (key === "S") out += '<defs><linearGradient id="rsgg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--pos)" stop-opacity=".30"/><stop offset="1" stop-color="var(--pos)" stop-opacity=".02"/></linearGradient></defs><path d="' + rsSmooth(pts) + "L" + lx + " " + f.y(0) + "L" + g.xf(0) + " " + f.y(0) + 'Z" fill="url(#rsgg)"/>';
+      out += '<path d="' + rsSmooth(pts) + '" fill="none" stroke="var(--pos)" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/>';
+      const ex = g.xf(n), ey = f.y(endV);
+      if (S.part) {
+        out += '<path d="M' + lx.toFixed(1) + " " + ly.toFixed(1) + "L" + ex.toFixed(1) + " " + ey.toFixed(1) + '" fill="none" stroke="var(--pos)" stroke-width="3" stroke-dasharray="2 6" stroke-linecap="round"/><circle cx="' + ex + '" cy="' + ey + '" r="4.8" fill="var(--surface)" stroke="var(--pos)" stroke-width="2.4"/>';
+        items.push({ t: "≈ " + rsDot(endV), y: ey, c: "var(--pos)", w: 800 });
+      } else { out += '<circle cx="' + ex + '" cy="' + ey + '" r="4.8" fill="var(--pos)" stroke="var(--surface)" stroke-width="2"/>'; items.push({ t: rsDot(endV), y: ey, c: "var(--pos)", w: 800 }); }
+      out += rsEndLabels(items, ex + 9);
+      return { g, svg: out };
+    };
+    const cumTip = (key) => (i) => {
+      const { s: S, year: Y } = C(); if (key === "E" && !S.hasPrev) return null;
+      const cur = S.part && i === S.cur;
+      let mine = key === "E" ? S.cumE[i] : S.cumSP[i]; const prev = S.hasPrev ? (key === "E" ? S.pcum[i] : S.pcumS[i]) : null;
+      if (cur && key === "E") mine = S.projEnd;
+      const lab = cur ? "fin de " + RS_MN[i] + " (proy.)" : "hasta " + RS_MN[i], f = key === "E" ? rsMoney : rsSigned;
+      let h = "<strong>" + lab + "</strong><div><span><i style='background:var(--pos)'></i>" + Y + "</span><b>" + (cur ? "≈ " : "") + f(mine) + "</b></div>";
+      if (prev !== null) { const d = mine - prev, good = key === "E" ? d <= 0 : d >= 0; h += "<div><span><i style='background:var(--prev)'></i>" + (Number(Y) - 1) + "</span><b>" + f(prev) + "</b></div><div><span>Diferencia</span><b class='" + (good ? "p" : "n") + "'>" + rsSigned(d) + "</b></div>"; }
+      return h;
+    };
+    const h2 = mk(refs[1].current, cumChart("E"), cumTip("E"));
+    const h4 = mk(refs[3].current, cumChart("S"), cumTip("S"));
+
+    // tasa de ahorro (mes actual = proyectada) + anio anterior
+    const h3 = mk(refs[2].current, (W, st) => {
+      const { s: S, goal: G } = C(), g = geo(W, W < 480 ? 36 : 40), n = S.n, r = S.rateP.slice(0, n), pr = S.hasPrev ? S.prate.slice(0, n) : [];
+      const all = r.concat(pr), dom = rsNice(Math.min(...all), Math.max(G, ...all)), f = frame(g, dom, (v) => v + "%", S.cur); let out = f.svg;
+      g.maxI = n - 1;
+      const yg = f.y(G);
+      out += '<line x1="' + g.ML + '" x2="' + (g.W - g.MR) + '" y1="' + yg + '" y2="' + yg + '" stroke="var(--gold)" stroke-width="1.8" stroke-dasharray="6 4"/><text x="' + (g.W - g.MR + 5) + '" y="' + (yg + 3.5) + '" style="fill:var(--gold);font-weight:800;font-size:11px">' + G + "%</text>";
+      if (pr.length) out += '<path d="' + rsSmooth(pr.map((v, k) => [g.cx(k), f.y(v)])) + '" fill="none" stroke="var(--prev)" stroke-width="1.8" opacity=".8" stroke-linejoin="round"/>';
+      const pts = r.map((v, k) => [g.cx(k), f.y(v)]), last = S.part ? n - 1 : n;
+      out += '<path d="' + rsSmooth(pts.slice(0, last)) + '" fill="none" stroke="var(--pos)" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round"/>';
+      if (S.part && last > 0) out += '<path d="' + rsSmooth(pts.slice(last - 1)) + '" fill="none" stroke="var(--pos)" stroke-width="2.8" stroke-dasharray="2 5" stroke-linecap="round"/>';
+      for (let i = 0; i < n; i++) { const ok = r[i] >= G, pc = i === S.cur; out += '<circle cx="' + pts[i][0] + '" cy="' + pts[i][1] + '" r="' + (st.i === i ? 5 : 3.8) + '" fill="' + (ok && !pc ? "var(--pos)" : "var(--surface)") + '" stroke="' + (ok ? "var(--pos)" : "var(--neg)") + '" stroke-width="2.2"' + (pc ? ' stroke-dasharray="2 2"' : "") + "/>"; }
+      return { g, svg: out };
+    }, (i) => {
+      const { s: S, goal: G, year: Y } = C(), r = S.rateP[i], cur = i === S.cur;
+      return "<strong>" + RS_MN[i] + (cur ? " · proy." : "") + "</strong><div><span><i style='background:var(--pos)'></i>" + Y + "</span><b class='" + (r >= G ? "p" : "n") + "'>" + (cur ? "≈ " : "") + rsPct(r) + " %</b></div>" + (S.hasPrev ? "<div><span><i style='background:var(--prev)'></i>" + (Number(Y) - 1) + "</span><b>" + rsPct(S.prate[i]) + " %</b></div>" : "") + "<div><span>Objetivo</span><b>" + G + " %</b></div>";
+    });
+    hosts.current = [h1, h2, h3, h4];
+    hosts.current.forEach((h) => h.render());
+    return () => { hosts.current.forEach((h) => h.destroy()); hosts.current = []; };
+  }, [has]);
+
+  useEffect(() => { hosts.current.forEach((h) => { h.i = null; h.render(); }); }, [s, goal, tab, pal]);
+
+  const vars = { "--pos": pal.pos, "--neg": pal.neg, "--ink": pal.ink, "--soft": pal.soft, "--line": pal.line, "--surface": pal.surface, "--dim": pal.dim, "--gold": pal.gold, "--prev": pal.prev, "--shadow": pal.shadow, "--rs-font": font };
+  const card = { background: pal.surface, borderRadius: 12, border: "1px solid " + pal.line, boxShadow: pal.shadow, marginBottom: 20 };
+  const styleTag = `
+    .rs .rs-card { padding: 20px 22px 16px; }
+    .rs .rs-host { position: relative; width: 100%; }
+    .rs svg.rs-chart { display: block; width: 100%; cursor: crosshair; touch-action: pan-y; }
+    .rs svg text { font-family: var(--rs-font); font-size: 10.5px; fill: var(--soft); }
+    .rs .rs-tip { position: absolute; top: 4px; width: 148px; pointer-events: none; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); padding: 6px 9px; font-size: 11.5px; z-index: 3; font-variant-numeric: tabular-nums; font-family: var(--rs-font); color: var(--soft); }
+    .rs .rs-tip strong { display: block; color: var(--ink); margin-bottom: 2px; }
+    .rs .rs-tip div { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    .rs .rs-tip i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }
+    .rs .rs-tip b { color: var(--ink); } .rs .rs-tip b.p { color: var(--pos); } .rs .rs-tip b.n { color: var(--neg); }
+    .rs .rs-key { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--soft); }
+    .rs .rs-key i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+    .rs .rs-key u { display: inline-block; width: 12px; height: 3px; border-radius: 2px; margin-right: 4px; vertical-align: 3px; text-decoration: none; }
+    .rs .rs-tabs { display: inline-flex; background: var(--dim); border-radius: 8px; padding: 3px; gap: 2px; }
+    .rs .rs-tabs button { font-family: var(--rs-font); font-size: 12.5px; font-weight: 600; color: var(--soft); background: none; border: 0; border-radius: 6px; padding: 5px 11px; cursor: pointer; }
+    .rs .rs-tabs button.on { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+    .rs .rs-step { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--soft); }
+    .rs .rs-step button { width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--line); background: none; color: var(--soft); cursor: pointer; font-family: var(--rs-font); line-height: 1; }
+    .rs .rs-step b { color: var(--ink); min-width: 34px; text-align: center; font-variant-numeric: tabular-nums; }
+    .rs .rs-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+    @media (max-width: 640px) { .rs .rs-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .rs .rs-card { padding: 16px 10px 12px; } }
+  `;
+  if (!has) return <p style={{ fontSize: 13, color: pal.soft }}>No hay datos para este periodo todavia.</p>;
+
+  const I = s.inc.reduce((a, b) => a + b, 0), E = s.exp.reduce((a, b) => a + b, 0), A = I - E, T = I > 0 ? (A / I) * 100 : 0;
+  const tag = " vs " + (Number(year) - 1);
+  const tile = (title, value, color, delta, good) => (
+    <div style={{ ...card, marginBottom: 0, padding: "14px 16px", minWidth: 0 }}>
+      <p style={{ fontSize: 12, color: pal.soft, margin: "0 0 4px" }}>{title}</p>
+      <p style={{ fontFamily: font, fontSize: 21, fontWeight: 800, letterSpacing: "-0.02em", color: color, margin: 0 }}>{value}</p>
+      {delta && <p style={{ fontSize: 11.5, fontWeight: 700, margin: "3px 0 0", whiteSpace: "nowrap", color: good ? pal.pos : pal.neg }}>{delta}</p>}
+    </div>
+  );
+  const pc = (a, b) => (b > 0 ? ((a >= b ? "▲ " : "▼ ") + rsPct(Math.abs(((a - b) / b) * 100)) + " %" + tag) : null);
+  let dI = null, dE = null, dA = null, dT = null, pA = 0, pT = 0;
+  if (s.hasPrev) {
+    pA = s.pI - s.pE; pT = s.pI > 0 ? (pA / s.pI) * 100 : 0;
+    dI = pc(I, s.pI); dE = pc(E, s.pE);
+    dA = (A >= pA ? "▲ " : "▼ ") + rsDot(A - pA) + " €" + tag;
+    dT = (T >= pT ? "▲ " : "▼ ") + rsPct(Math.abs(T - pT)) + " pts" + tag;
+  }
+  const periodLabel = s.part ? "1 ene – " + s.day + " " + RS_MN[s.n - 1] + (s.hasPrev ? " · vs " + (Number(year) - 1) : "") : "";
+
+  return (
+    <div className="rs" style={vars}>
+      <style>{styleTag}</style>
+      {periodLabel && <p style={{ fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", color: pal.soft, margin: "0 0 10px" }}>{periodLabel}</p>}
+      <section className="rs-kpis">
+        {tile("Ingresos", rsMoney(I), pal.ink, dI, I >= s.pI)}
+        {tile("Gastos", rsMoney(E), pal.ink, dE, E <= s.pE)}
+        {tile("Ahorro", rsMoney(A), A >= 0 ? pal.pos : pal.neg, dA, A >= pA)}
+        {tile("Tasa de ahorro", rsPct(T) + " %", pal.ink, dT, T >= pT)}
+      </section>
+      <section className="rs-card" style={card}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+          <p style={{ fontSize: 12, color: pal.soft, margin: 0 }}>Ingresos y gastos por mes</p>
+          <div className="rs-key"><span><i style={{ background: pal.pos, opacity: 0.55 }} />Ingresos</span><span><i style={{ background: pal.neg, opacity: 0.6 }} />Gastos</span><span><i style={{ border: "1.5px dashed " + pal.soft, width: 8, height: 8 }} />Proyecci&oacute;n</span></div>
+        </div>
+        <div className="rs-host" ref={refs[0]} />
+      </section>
+      {s.hasPrev && (
+        <section className="rs-card" style={card}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+            <p style={{ fontSize: 12, color: pal.soft, margin: 0 }}>Gasto acumulado hasta fin de mes</p>
+            <div className="rs-key"><span><u style={{ background: pal.pos }} />Este a&ntilde;o</span><span><u style={{ background: pal.prev }} />Anterior</span></div>
+          </div>
+          <div className="rs-host" ref={refs[1]} />
+        </section>
+      )}
+      <section className="rs-card" style={card}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+          <div className="rs-tabs">
+            <button className={tab === "S" ? "on" : ""} onClick={() => setTab("S")}>Ahorro acumulado</button>
+            <button className={tab === "R" ? "on" : ""} onClick={() => setTab("R")}>Tasa de ahorro</button>
+          </div>
+          {tab === "R" && (
+            <div className="rs-step" aria-label="Objetivo">
+              <span>objetivo</span>
+              <button aria-label="Bajar objetivo" onClick={() => setGoal((g) => Math.max(0, g - 5))}>&minus;</button>
+              <b>{goal} %</b>
+              <button aria-label="Subir objetivo" onClick={() => setGoal((g) => Math.min(60, g + 5))}>+</button>
+            </div>
+          )}
+        </div>
+        <div className="rs-host" ref={refs[3]} style={{ display: tab === "S" ? "" : "none" }} />
+        <div className="rs-host" ref={refs[2]} style={{ display: tab === "R" ? "" : "none" }} />
+      </section>
+    </div>
+  );
+}
+
 export default function App() {
   const [mode, setMode] = useState("light");
   const PALETTE = mode === "dark" ? DARK_PALETTE : LIGHT_PALETTE;
@@ -2059,6 +2384,8 @@ export default function App() {
                 {yearsAvailable.map((y) => <option key={y} value={y}>{y}</option>)}
               </select>
             </section>
+            {resumenYear === "all" ? (
+              <>
             <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, marginBottom: 20 }}>
               <div style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "16px 18px" }}>
                 <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "0 0 6px" }}>Ingresos</p>
@@ -2116,6 +2443,10 @@ export default function App() {
                 </div>
               )}
             </section>
+              </>
+            ) : (
+              <ResumenCharts realized={realized} year={resumenYear} font={FONT} pal={{ pos: PALETTE.income, neg: PALETTE.expense, ink: PALETTE.ink, soft: PALETTE.inkSoft, line: PALETTE.rule, surface: PALETTE.paper, dim: PALETTE.paperDim, gold: mode === "dark" ? "#E5B93C" : "#CA8A04", prev: mode === "dark" ? "#86A3D4" : "#7F9BC4", shadow: PALETTE.shadow }} />
+            )}
             <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, marginTop: 20 }} className="ritmo-card">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
                 <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: 0 }}>Ritmo del mes</p>
