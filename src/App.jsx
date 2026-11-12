@@ -1512,6 +1512,9 @@ export default function App() {
       .add-btn { display: inline-flex; align-items: center; gap: 8px; border-radius: 8px; padding: 11px 18px; font-weight: 500; font-size: 13.5px; box-shadow: 0 6px 16px -8px ${PALETTE.gold}; }
       .month-select { font-family: ${FONT}; font-weight: 700; font-size: 22px; letter-spacing: -0.02em; color: ${PALETTE.ink}; background: none; border: none; padding: 0; cursor: pointer; outline: none; text-transform: capitalize; }
       .month-select option { font-size: 14px; font-weight: 400; text-transform: capitalize; }
+      .period-label { min-width: 150px; text-align: center; font-size: 16px; }
+      .pl-short { display: none; }
+      @media (max-width: 560px) { .period-label { min-width: 74px; font-size: 14px; } .pl-long { display: none; } .pl-short { display: inline; } }
       .seg-period { display: inline-flex; background: ${PALETTE.paperDim}; border-radius: 999px; padding: 2px; }
       .seg-period button { border: none; background: none; padding: 4px 13px; border-radius: 999px; font-family: ${FONT}; font-size: 12px; font-weight: 600; color: ${PALETTE.inkSoft}; cursor: pointer; }
       .seg-period button.on { background: ${PALETTE.paper}; color: ${PALETTE.ink}; box-shadow: 0 1px 3px rgba(0,0,0,.14); }
@@ -1722,6 +1725,7 @@ export default function App() {
   const canPrevPeriod = periodMode === "month" ? (periodYear > registroMinYear || periodMonth > 0) : periodMode === "year" ? periodYear > registroMinYear : false;
   const canNextPeriod = periodMode === "month" ? (periodYear < curYearNum || periodMonth < CURRENT_MONTH_INDEX) : periodMode === "year" ? periodYear < curYearNum : false;
   const periodLabel = periodMode === "all" ? "Histórico completo" : periodMode === "year" ? `Año ${periodYear}` : `${MONTHS[periodMonth]} ${periodYear}`;
+  const periodShort = periodMode === "all" ? "Histórico" : periodMode === "year" ? `Año ${periodYear}` : `${MONTHS_SHORT[periodMonth]} ${periodYear}`;
   const monthKeyOf = (y, m) => `${y}-${String(m + 1).padStart(2, "0")}`;
   function changePeriodMode(mode) {
     setCatFilter(null);
@@ -1822,7 +1826,7 @@ export default function App() {
             {importMsg && <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "-6px 0 14px" }}>{importMsg}</p>}
 
             <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "22px 24px", marginBottom: 18 }}>
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
                 <div className="seg-period" role="group" aria-label="Tipo de periodo">
                   {[["month", "Mes"], ["year", "Año"], ["all", "Todo"]].map(([id, text]) => (
                     <button key={id} type="button" className={periodMode === id ? "on" : ""} onClick={() => changePeriodMode(id)}>{text}</button>
@@ -1832,7 +1836,10 @@ export default function App() {
                   <button type="button" className="arrow-btn" onClick={() => stepPeriod(-1)} disabled={!canPrevPeriod} aria-label="Periodo anterior">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
                   </button>
-                  <span style={{ minWidth: 140, textAlign: "center", fontFamily: FONT, fontSize: 16, fontWeight: 700, letterSpacing: "-0.01em", textTransform: "capitalize", color: PALETTE.ink }}>{periodLabel}</span>
+                  <span className="period-label" style={{ fontFamily: FONT, fontWeight: 700, letterSpacing: "-0.01em", textTransform: "capitalize", color: PALETTE.ink }}>
+                    <span className="pl-long">{periodLabel}</span>
+                    <span className="pl-short">{periodShort}</span>
+                  </span>
                   <button type="button" className="arrow-btn" onClick={() => stepPeriod(1)} disabled={!canNextPeriod} aria-label="Periodo siguiente">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6" /></svg>
                   </button>
@@ -2120,7 +2127,7 @@ export default function App() {
                       { t: "vs media", v: ritmo.curV !== undefined && ritmo.st ? ritmo.curV - ritmo.st.avg : undefined },
                       { t: ritmo.prevKey ? `vs ${MONTHS_SHORT[parseInt(ritmo.prevKey.slice(5, 7), 10) - 1]}` : "vs ant.", v: ritmo.curV !== undefined && ritmo.prevV !== undefined ? ritmo.curV - ritmo.prevV : undefined },
                     ].map((k) => (
-                      <div key={k.t} style={{ border: `1px solid ${PALETTE.rule}`, borderRadius: 8, padding: "5px 9px", minWidth: 0 }}>
+                      <div key={k.t} style={{ border: `1px solid ${PALETTE.rule}`, borderRadius: 8, padding: "5px 9px", minWidth: 0, textAlign: "center" }}>
                         <div style={{ fontSize: 10.5, color: PALETTE.inkSoft, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textTransform: "capitalize" }}>{k.t}</div>
                         <div style={{ fontFamily: FONT, fontSize: 14, fontWeight: 800, letterSpacing: "-0.01em", fontVariantNumeric: "tabular-nums", color: k.v === undefined ? PALETTE.inkSoft : k.v >= 0 ? PALETTE.income : PALETTE.expense }}>
                           {k.v === undefined ? "—" : `${k.v >= 0 ? "+" : ""}${formatMoneyRound(k.v)}`}
@@ -2154,12 +2161,12 @@ export default function App() {
                       <path d={ritmo.curPath} fill="none" stroke={PALETTE.income} strokeWidth="3.4" strokeLinejoin="round" strokeLinecap="round" />
                       <circle cx={ritmo.sx(ritmo.cur.length)} cy={ritmo.sy(ritmo.cur[ritmo.cur.length - 1])} r="4.6" fill={PALETTE.paper} stroke={PALETTE.income} strokeWidth="2.4" />
                       {ritmoKey === CURRENT_MONTH_KEY && (
-                        <text x={ritmo.sx(ritmo.cur.length) + 8} y={ritmo.sy(ritmo.cur[ritmo.cur.length - 1]) - 8} style={{ fontFamily: FONT, fontSize: 10.5, fontWeight: 800, fill: PALETTE.income }}>hoy</text>
+                        <text x={ritmo.sx(ritmo.cur.length) + 8} y={ritmo.sy(ritmo.cur[ritmo.cur.length - 1]) - 8} style={{ fontFamily: FONT, fontSize: 10.5, fontWeight: 800, fill: PALETTE.income, stroke: PALETTE.paper, strokeWidth: 5, paintOrder: "stroke", strokeLinejoin: "round" }}>hoy</text>
                       )}
                       {ritmo.projPath && (
                         <>
                           <circle cx={ritmo.sx(ritmo.projLastDay)} cy={ritmo.sy(ritmo.projEnd)} r="4.4" fill={PALETTE.paper} stroke={PALETTE.income} strokeWidth="2.2" strokeDasharray="2 2" />
-                          <text x={ritmo.sx(ritmo.projLastDay) - 8} y={ritmo.sy(ritmo.projEnd) - 10} textAnchor="end" style={{ fontFamily: FONT, fontSize: 11, fontWeight: 800, fill: PALETTE.income }}>≈ {ritmo.projEnd >= 0 ? "+" : ""}{formatMoneyRound(ritmo.projEnd)}</text>
+                          <text x={ritmo.sx(ritmo.projLastDay) - 8} y={ritmo.sy(ritmo.projEnd) - 10} textAnchor="end" style={{ fontFamily: FONT, fontSize: 11, fontWeight: 800, fill: PALETTE.income, stroke: PALETTE.paper, strokeWidth: 5, paintOrder: "stroke", strokeLinejoin: "round" }}>≈ {ritmo.projEnd >= 0 ? "+" : ""}{formatMoneyRound(ritmo.projEnd)}</text>
                         </>
                       )}
                       {ritmoDay && (
