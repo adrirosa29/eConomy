@@ -1658,6 +1658,7 @@ export default function App() {
   // ---- Ritmo del mes (pestaña Resumen) ----
   const ritmoKey = ritmoMonth && ritmoMonths.includes(ritmoMonth) ? ritmoMonth : (ritmoMonths[0] || null);
   const ritmoGold = mode === "dark" ? "#E5B93C" : "#CA8A04";
+  const ritmoShort = ritmoKey ? MONTHS_SHORT[parseInt(ritmoKey.slice(5, 7), 10) - 1] : "";
   let ritmo = null;
   if (ritmoKey && ritmoSeries[ritmoKey]) {
     const W = Math.max(260, ritmoW), narrow = W < 480, H = narrow ? 300 : 260, ML = narrow ? 42 : 48, MR = narrow ? 16 : 22, MT = 14, MB = 28, PW = W - ML - MR, PH = H - MT - MB;
@@ -1671,7 +1672,17 @@ export default function App() {
       const vals = others.map((k) => ritmoSeries[k][d - 1]).filter((v) => v !== undefined);
       stats.push(vals.length ? { min: Math.min(...vals), max: Math.max(...vals), avg: vals.reduce((a, b) => a + b, 0) / vals.length } : null);
     }
-    const all = [...cur, ...(prev || [])];
+    // Proyeccion: solo para el mes en curso; sigue la forma de la media de los demas meses.
+    const projPts = [];
+    if (ritmoKey === CURRENT_MONTH_KEY && stats[cur.length - 1]) {
+      const base0 = cur[cur.length - 1], a0 = stats[cur.length - 1].avg;
+      for (let d = cur.length; d <= 31; d++) {
+        const st = stats[d - 1];
+        if (!st) break;
+        projPts.push(base0 + (st.avg - a0));
+      }
+    }
+    const all = [...cur, ...(prev || []), ...projPts];
     stats.forEach((st) => { if (st) all.push(st.min, st.max, st.avg); });
     const ticks = niceTicks(Math.min(...all), Math.max(...all), 5);
     const ymin = ticks[0], ymax = ticks[ticks.length - 1];
@@ -1690,6 +1701,8 @@ export default function App() {
     ritmo = {
       W, H, ML, MR, MT, MB, PW, narrow, ticks, sx, sy, cur, prevKey,
       curPath: pathOf(cur), prevPath: prev ? pathOf(prev) : "",
+      projPath: projPts.length > 1 ? projPts.map((v, i) => `${i ? "L" : "M"}${sx(cur.length + i).toFixed(1)} ${sy(v).toFixed(1)}`).join("") : "",
+      projEnd: projPts[projPts.length - 1], projLastDay: cur.length + projPts.length - 1,
       bandPath: top ? top + bot + "Z" : "", avgPath: avg,
       day, curV: cur[day - 1], prevV: prev ? prev[day - 1] : undefined, st: stats[day - 1],
     };
@@ -2089,8 +2102,8 @@ export default function App() {
               )}
             </section>
             <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, marginTop: 20 }} className="ritmo-card">
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 6 }}>
-                <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: 0 }}>Ritmo del mes: balance acumulado día a día</p>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
+                <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: 0 }}>Ritmo del mes</p>
                 {ritmoMonths.length > 0 && (
                   <select className="pill-btn" style={{ cursor: "pointer", textTransform: "capitalize" }} value={ritmoKey || ""} onChange={(e) => { setRitmoMonth(e.target.value); setRitmoDay(null); }} aria-label="Mes a analizar">
                     {ritmoMonths.map((k) => <option key={k} value={k}>{monthLabel(k)}</option>)}
@@ -2101,48 +2114,84 @@ export default function App() {
                 <p style={{ fontSize: 13, color: PALETTE.inkSoft }}>No hay datos para este periodo todavia.</p>
               ) : (
                 <>
-                  <div ref={setRitmoBox} style={{ width: "100%" }}>
-                  <svg
-                    viewBox={`0 0 ${ritmo.W} ${ritmo.H}`}
-                    style={{ width: "100%", height: ritmo.H, display: "block", touchAction: "pan-y", cursor: "crosshair" }}
-                    role="img"
-                    aria-label="Balance acumulado por día del mes"
-                    onPointerMove={ritmoPointer}
-                    onPointerDown={ritmoPointer}
-                    onPointerLeave={() => setRitmoDay(null)}
-                  >
-                    {ritmo.ticks.map((t) => (
-                      <g key={t}>
-                        <line x1={ritmo.ML} x2={ritmo.W - ritmo.MR} y1={ritmo.sy(t)} y2={ritmo.sy(t)} stroke={t === 0 ? PALETTE.inkSoft : PALETTE.rule} strokeWidth="1" opacity={t === 0 ? 0.75 : 1} />
-                        <text x={ritmo.ML - 8} y={ritmo.sy(t) + 3.5} textAnchor="end" style={{ fontFamily: FONT, fontSize: 10.5, fill: PALETTE.inkSoft }}>{formatMoneyAxis(t)}</text>
-                      </g>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8, marginBottom: 8 }}>
+                    {[
+                      { t: `${ritmoShort} · día ${ritmo.day}`, v: ritmo.curV },
+                      { t: "vs media", v: ritmo.curV !== undefined && ritmo.st ? ritmo.curV - ritmo.st.avg : undefined },
+                      { t: ritmo.prevKey ? `vs ${MONTHS_SHORT[parseInt(ritmo.prevKey.slice(5, 7), 10) - 1]}` : "vs ant.", v: ritmo.curV !== undefined && ritmo.prevV !== undefined ? ritmo.curV - ritmo.prevV : undefined },
+                    ].map((k) => (
+                      <div key={k.t} style={{ border: `1px solid ${PALETTE.rule}`, borderRadius: 8, padding: "5px 9px", minWidth: 0 }}>
+                        <div style={{ fontSize: 10.5, color: PALETTE.inkSoft, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textTransform: "capitalize" }}>{k.t}</div>
+                        <div style={{ fontFamily: FONT, fontSize: 14, fontWeight: 800, letterSpacing: "-0.01em", fontVariantNumeric: "tabular-nums", color: k.v === undefined ? PALETTE.inkSoft : k.v >= 0 ? PALETTE.income : PALETTE.expense }}>
+                          {k.v === undefined ? "—" : `${k.v >= 0 ? "+" : ""}${formatMoneyRound(k.v)}`}
+                        </div>
+                      </div>
                     ))}
-                    {(ritmo.narrow ? [1, 10, 20, 31] : [1, 5, 10, 15, 20, 25, 31]).map((d) => (
-                      <text key={d} x={ritmo.sx(d)} y={ritmo.H - 9} textAnchor="middle" style={{ fontFamily: FONT, fontSize: 10.5, fill: PALETTE.inkSoft }}>{d}</text>
-                    ))}
-                    {ritmo.bandPath && <path d={ritmo.bandPath} fill={PALETTE.income} opacity="0.1" />}
-                    {ritmo.avgPath && <path d={ritmo.avgPath} fill="none" stroke={ritmoGold} strokeWidth="2" strokeDasharray="6 4" />}
-                    {ritmo.prevPath && <path d={ritmo.prevPath} fill="none" stroke={PALETTE.inkSoft} strokeWidth="1.8" opacity="0.8" strokeLinejoin="round" />}
-                    <path d={ritmo.curPath} fill="none" stroke={PALETTE.income} strokeWidth="3.4" strokeLinejoin="round" strokeLinecap="round" />
-                    <circle cx={ritmo.sx(ritmo.cur.length)} cy={ritmo.sy(ritmo.cur[ritmo.cur.length - 1])} r="4.6" fill={PALETTE.paper} stroke={PALETTE.income} strokeWidth="2.4" />
-                    {ritmoKey === CURRENT_MONTH_KEY && (
-                      <text x={ritmo.sx(ritmo.cur.length) + 8} y={ritmo.sy(ritmo.cur[ritmo.cur.length - 1]) - 8} style={{ fontFamily: FONT, fontSize: 10.5, fontWeight: 800, fill: PALETTE.income }}>hoy</text>
+                  </div>
+                  <div ref={setRitmoBox} style={{ width: "100%", position: "relative" }}>
+                    <svg
+                      viewBox={`0 0 ${ritmo.W} ${ritmo.H}`}
+                      style={{ width: "100%", height: ritmo.H, display: "block", touchAction: "pan-y", cursor: "crosshair" }}
+                      role="img"
+                      aria-label="Balance acumulado por día del mes"
+                      onPointerMove={ritmoPointer}
+                      onPointerDown={ritmoPointer}
+                      onPointerLeave={() => setRitmoDay(null)}
+                    >
+                      {ritmo.ticks.map((t) => (
+                        <g key={t}>
+                          <line x1={ritmo.ML} x2={ritmo.W - ritmo.MR} y1={ritmo.sy(t)} y2={ritmo.sy(t)} stroke={t === 0 ? PALETTE.inkSoft : PALETTE.rule} strokeWidth="1" opacity={t === 0 ? 0.75 : 1} />
+                          <text x={ritmo.ML - 8} y={ritmo.sy(t) + 3.5} textAnchor="end" style={{ fontFamily: FONT, fontSize: 10.5, fill: PALETTE.inkSoft }}>{formatMoneyAxis(t)}</text>
+                        </g>
+                      ))}
+                      {(ritmo.narrow ? [1, 10, 20, 31] : [1, 5, 10, 15, 20, 25, 31]).map((d) => (
+                        <text key={d} x={ritmo.sx(d)} y={ritmo.H - 9} textAnchor="middle" style={{ fontFamily: FONT, fontSize: 10.5, fill: PALETTE.inkSoft }}>{d}</text>
+                      ))}
+                      {ritmo.bandPath && <path d={ritmo.bandPath} fill={PALETTE.income} opacity="0.1" />}
+                      {ritmo.avgPath && <path d={ritmo.avgPath} fill="none" stroke={ritmoGold} strokeWidth="2" strokeDasharray="6 4" />}
+                      {ritmo.prevPath && <path d={ritmo.prevPath} fill="none" stroke={PALETTE.inkSoft} strokeWidth="1.8" opacity="0.8" strokeLinejoin="round" />}
+                      {ritmo.projPath && <path d={ritmo.projPath} fill="none" stroke={PALETTE.income} strokeWidth="3" strokeDasharray="2 6" strokeLinecap="round" opacity="0.85" />}
+                      <path d={ritmo.curPath} fill="none" stroke={PALETTE.income} strokeWidth="3.4" strokeLinejoin="round" strokeLinecap="round" />
+                      <circle cx={ritmo.sx(ritmo.cur.length)} cy={ritmo.sy(ritmo.cur[ritmo.cur.length - 1])} r="4.6" fill={PALETTE.paper} stroke={PALETTE.income} strokeWidth="2.4" />
+                      {ritmoKey === CURRENT_MONTH_KEY && (
+                        <text x={ritmo.sx(ritmo.cur.length) + 8} y={ritmo.sy(ritmo.cur[ritmo.cur.length - 1]) - 8} style={{ fontFamily: FONT, fontSize: 10.5, fontWeight: 800, fill: PALETTE.income }}>hoy</text>
+                      )}
+                      {ritmo.projPath && (
+                        <>
+                          <circle cx={ritmo.sx(ritmo.projLastDay)} cy={ritmo.sy(ritmo.projEnd)} r="4.4" fill={PALETTE.paper} stroke={PALETTE.income} strokeWidth="2.2" strokeDasharray="2 2" />
+                          <text x={ritmo.sx(ritmo.projLastDay) - 8} y={ritmo.sy(ritmo.projEnd) - 10} textAnchor="end" style={{ fontFamily: FONT, fontSize: 11, fontWeight: 800, fill: PALETTE.income }}>≈ {ritmo.projEnd >= 0 ? "+" : ""}{formatMoneyRound(ritmo.projEnd)}</text>
+                        </>
+                      )}
+                      {ritmoDay && (
+                        <g>
+                          <line x1={ritmo.sx(ritmo.day)} x2={ritmo.sx(ritmo.day)} y1={ritmo.MT} y2={ritmo.H - ritmo.MB} stroke={PALETTE.inkSoft} strokeDasharray="3 3" opacity="0.6" />
+                          {ritmo.prevV !== undefined && <circle cx={ritmo.sx(ritmo.day)} cy={ritmo.sy(ritmo.prevV)} r="4" fill={PALETTE.paper} stroke={PALETTE.inkSoft} strokeWidth="2.2" />}
+                          {ritmo.st && <circle cx={ritmo.sx(ritmo.day)} cy={ritmo.sy(ritmo.st.avg)} r="4" fill={PALETTE.paper} stroke={ritmoGold} strokeWidth="2.2" />}
+                          {ritmo.curV !== undefined && <circle cx={ritmo.sx(ritmo.day)} cy={ritmo.sy(ritmo.curV)} r="4.8" fill={PALETTE.income} stroke={PALETTE.paper} strokeWidth="2" />}
+                        </g>
+                      )}
+                    </svg>
+                    {ritmoDay && (
+                      <div style={{ position: "absolute", top: 6, left: Math.max(0, ritmo.sx(ritmo.day) + 12 + 138 > ritmo.W ? ritmo.sx(ritmo.day) - 12 - 138 : ritmo.sx(ritmo.day) + 12), width: 138, pointerEvents: "none", background: PALETTE.paper, border: `1px solid ${PALETTE.rule}`, borderRadius: 8, boxShadow: PALETTE.shadow, padding: "6px 9px", fontSize: 11.5, zIndex: 3, fontVariantNumeric: "tabular-nums" }}>
+                        <div style={{ fontWeight: 700, color: PALETTE.ink, marginBottom: 2 }}>Día {ritmo.day}</div>
+                        {[
+                          { c: PALETTE.income, t: ritmoShort, v: ritmo.curV },
+                          ritmo.prevKey ? { c: PALETTE.inkSoft, t: MONTHS_SHORT[parseInt(ritmo.prevKey.slice(5, 7), 10) - 1], v: ritmo.prevV } : null,
+                          ritmo.st ? { c: ritmoGold, t: "Media", v: ritmo.st.avg } : null,
+                        ].filter(Boolean).map((r) => (
+                          <div key={r.t} style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                            <span style={{ color: PALETTE.inkSoft, textTransform: "capitalize" }}><i style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", background: r.c, marginRight: 5 }} />{r.t}</span>
+                            <strong style={{ color: PALETTE.ink }}>{r.v === undefined ? "—" : `${r.v >= 0 ? "+" : ""}${formatMoneyRound(r.v)}`}</strong>
+                          </div>
+                        ))}
+                      </div>
                     )}
-                    <line x1={ritmo.sx(ritmo.day)} x2={ritmo.sx(ritmo.day)} y1={ritmo.MT} y2={ritmo.H - ritmo.MB} stroke={PALETTE.inkSoft} strokeDasharray="3 3" opacity="0.6" />
-                  </svg>
                   </div>
-                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${PALETTE.rule}`, display: "flex", gap: "6px 16px", flexWrap: "wrap", fontSize: 12.5, color: PALETTE.inkSoft, alignItems: "baseline", fontVariantNumeric: "tabular-nums" }}>
-                    <strong style={{ color: PALETTE.ink }}>día {ritmo.day}</strong>
-                    <span style={{ textTransform: "capitalize" }}>{monthLabel(ritmoKey).split(" ")[0]}: {ritmo.curV === undefined ? "sin datos" : <strong style={{ color: ritmo.curV >= 0 ? PALETTE.income : PALETTE.expense }}>{ritmo.curV >= 0 ? "+" : ""}{formatMoneyRound(ritmo.curV)}</strong>}</span>
-                    {ritmo.prevKey && ritmo.prevV !== undefined && <span style={{ textTransform: "capitalize" }}>{monthLabel(ritmo.prevKey).split(" ")[0]}: <strong style={{ color: PALETTE.ink }}>{ritmo.prevV >= 0 ? "+" : ""}{formatMoneyRound(ritmo.prevV)}</strong></span>}
-                    {ritmo.st && <span>Media: <strong style={{ color: PALETTE.ink }}>{ritmo.st.avg >= 0 ? "+" : ""}{formatMoneyRound(ritmo.st.avg)}</strong></span>}
-                    {ritmo.st && ritmo.curV !== undefined && <span>Frente a la media: <strong style={{ color: ritmo.curV - ritmo.st.avg >= 0 ? PALETTE.income : PALETTE.expense }}>{ritmo.curV - ritmo.st.avg >= 0 ? "+" : ""}{formatMoneyRound(ritmo.curV - ritmo.st.avg)}</strong></span>}
-                  </div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginTop: 8, fontSize: 11.5, color: PALETTE.inkSoft }}>
-                    <span><i style={{ display: "inline-block", width: 14, height: 3, borderRadius: 2, background: PALETTE.income, marginRight: 5, verticalAlign: 3 }} /><span style={{ textTransform: "capitalize" }}>{monthLabel(ritmoKey).split(" ")[0]}</span></span>
-                    {ritmo.prevPath && <span><i style={{ display: "inline-block", width: 14, height: 3, borderRadius: 2, background: PALETTE.inkSoft, marginRight: 5, verticalAlign: 3 }} /><span style={{ textTransform: "capitalize" }}>{monthLabel(ritmo.prevKey).split(" ")[0]}</span></span>}
-                    {ritmo.avgPath && <span><i style={{ display: "inline-block", width: 14, height: 3, borderRadius: 2, background: ritmoGold, marginRight: 5, verticalAlign: 3 }} />Media de los demás meses</span>}
-                    {ritmo.bandPath && <span><i style={{ display: "inline-block", width: 14, height: 9, borderRadius: 2, background: PALETTE.income, opacity: 0.25, marginRight: 5, verticalAlign: -1 }} />Rango del mejor al peor mes</span>}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 12px", marginTop: 6, fontSize: 10.5, color: PALETTE.inkSoft }}>
+                    <span><i style={{ display: "inline-block", width: 12, height: 3, borderRadius: 2, background: PALETTE.income, marginRight: 4, verticalAlign: 3 }} />{ritmoShort}</span>
+                    {ritmo.prevPath && <span><i style={{ display: "inline-block", width: 12, height: 3, borderRadius: 2, background: PALETTE.inkSoft, marginRight: 4, verticalAlign: 3 }} />{MONTHS_SHORT[parseInt(ritmo.prevKey.slice(5, 7), 10) - 1]}</span>}
+                    {ritmo.avgPath && <span><i style={{ display: "inline-block", width: 12, height: 3, borderRadius: 2, background: ritmoGold, marginRight: 4, verticalAlign: 3 }} />Media</span>}
+                    {ritmo.bandPath && <span><i style={{ display: "inline-block", width: 12, height: 8, borderRadius: 2, background: PALETTE.income, opacity: 0.25, marginRight: 4, verticalAlign: -1 }} />Rango</span>}
                   </div>
                 </>
               )}
