@@ -1512,9 +1512,10 @@ export default function App() {
       .add-btn { display: inline-flex; align-items: center; gap: 8px; border-radius: 8px; padding: 11px 18px; font-weight: 500; font-size: 13.5px; box-shadow: 0 6px 16px -8px ${PALETTE.gold}; }
       .month-select { font-family: ${FONT}; font-weight: 700; font-size: 22px; letter-spacing: -0.02em; color: ${PALETTE.ink}; background: none; border: none; padding: 0; cursor: pointer; outline: none; text-transform: capitalize; }
       .month-select option { font-size: 14px; font-weight: 400; text-transform: capitalize; }
-      .period-label { min-width: 150px; text-align: center; font-size: 16px; }
+      .registro-card { padding: 22px 24px; }
+      .period-label { min-width: 150px; text-align: center; font-size: 16px; white-space: nowrap; }
       .pl-short { display: none; }
-      @media (max-width: 560px) { .period-label { min-width: 74px; font-size: 14px; } .pl-long { display: none; } .pl-short { display: inline; } }
+      @media (max-width: 560px) { .registro-card { padding: 16px 12px; } .seg-period button { padding: 4px 9px; } .arrow-btn { width: 26px; height: 26px; } .period-label { min-width: 0; font-size: 14px; } .pl-long { display: none; } .pl-short { display: inline; } }
       .seg-period { display: inline-flex; background: ${PALETTE.paperDim}; border-radius: 999px; padding: 2px; }
       .seg-period button { border: none; background: none; padding: 4px 13px; border-radius: 999px; font-family: ${FONT}; font-size: 12px; font-weight: 600; color: ${PALETTE.inkSoft}; cursor: pointer; }
       .seg-period button.on { background: ${PALETTE.paper}; color: ${PALETTE.ink}; box-shadow: 0 1px 3px rgba(0,0,0,.14); }
@@ -1664,7 +1665,7 @@ export default function App() {
   const ritmoShort = ritmoKey ? MONTHS_SHORT[parseInt(ritmoKey.slice(5, 7), 10) - 1] : "";
   let ritmo = null;
   if (ritmoKey && ritmoSeries[ritmoKey]) {
-    const W = Math.max(260, ritmoW), narrow = W < 480, H = narrow ? 300 : 260, ML = narrow ? 42 : 48, MR = narrow ? 16 : 22, MT = 14, MB = 28, PW = W - ML - MR, PH = H - MT - MB;
+    const W = Math.max(260, ritmoW), narrow = W < 480, H = narrow ? 300 : 260, ML = narrow ? 42 : 48, MR = narrow ? 50 : 56, MT = 14, MB = 28, PW = W - ML - MR, PH = H - MT - MB;
     const cur = ritmoSeries[ritmoKey];
     const [cy, cm] = ritmoKey.split("-").map(Number);
     const prevKey = cm === 1 ? `${cy - 1}-12` : `${cy}-${String(cm - 1).padStart(2, "0")}`;
@@ -1700,12 +1701,19 @@ export default function App() {
       bot = `L${sx(d).toFixed(1)} ${sy(st.min).toFixed(1)}` + bot;
       avg += `${avg ? "L" : "M"}${sx(d).toFixed(1)} ${sy(st.avg).toFixed(1)}`;
     }
+    // Etiquetas al final de cada linea (margen derecho), ordenadas y sin solaparse.
+    const curEnd = projPts.length > 1 ? projPts[projPts.length - 1] : cur[cur.length - 1];
+    const endLabels = [{ k: "cur", t: (projPts.length > 1 ? "≈ " : "") + formatMoneyAxis(curEnd), y: sy(curEnd), c: PALETTE.income, w: 800 }];
+    if (stats[30]) endLabels.push({ k: "avg", t: formatMoneyAxis(stats[30].avg), y: sy(stats[30].avg), c: ritmoGold, w: 700 });
+    if (prev) endLabels.push({ k: "prev", t: formatMoneyAxis(prev[prev.length - 1]), y: sy(prev[prev.length - 1]), c: PALETTE.inkSoft, w: 700 });
+    endLabels.sort((a, b) => a.y - b.y);
+    for (let i = 1; i < endLabels.length; i++) if (endLabels[i].y - endLabels[i - 1].y < 13) endLabels[i].y = endLabels[i - 1].y + 13;
     const day = Math.max(1, Math.min(31, ritmoDay || cur.length));
     ritmo = {
       W, H, ML, MR, MT, MB, PW, narrow, ticks, sx, sy, cur, prevKey,
       curPath: pathOf(cur), prevPath: prev ? pathOf(prev) : "",
       projPath: projPts.length > 1 ? projPts.map((v, i) => `${i ? "L" : "M"}${sx(cur.length + i).toFixed(1)} ${sy(v).toFixed(1)}`).join("") : "",
-      projEnd: projPts[projPts.length - 1], projLastDay: cur.length + projPts.length - 1,
+      projEnd: projPts[projPts.length - 1], projLastDay: cur.length + projPts.length - 1, endLabels,
       bandPath: top ? top + bot + "Z" : "", avgPath: avg,
       day, curV: cur[day - 1], prevV: prev ? prev[day - 1] : undefined, st: stats[day - 1],
     };
@@ -1825,8 +1833,8 @@ export default function App() {
             </div>
             {importMsg && <p style={{ fontSize: 12, color: PALETTE.inkSoft, margin: "-6px 0 14px" }}>{importMsg}</p>}
 
-            <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, padding: "22px 24px", marginBottom: 18 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+            <section style={{ background: PALETTE.paper, borderRadius: 12, border: `1px solid ${PALETTE.rule}`, boxShadow: PALETTE.shadow, marginBottom: 18 }} className="registro-card">
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "nowrap", marginBottom: 14 }}>
                 <div className="seg-period" role="group" aria-label="Tipo de periodo">
                   {[["month", "Mes"], ["year", "Año"], ["all", "Todo"]].map(([id, text]) => (
                     <button key={id} type="button" className={periodMode === id ? "on" : ""} onClick={() => changePeriodMode(id)}>{text}</button>
@@ -2151,7 +2159,7 @@ export default function App() {
                           <text x={ritmo.ML - 8} y={ritmo.sy(t) + 3.5} textAnchor="end" style={{ fontFamily: FONT, fontSize: 10.5, fill: PALETTE.inkSoft }}>{formatMoneyAxis(t)}</text>
                         </g>
                       ))}
-                      {(ritmo.narrow ? [1, 10, 20, 31] : [1, 5, 10, 15, 20, 25, 31]).map((d) => (
+                      {(ritmo.narrow ? [1, 10, 20, 31] : [1, 5, 10, 15, 20, 25, 31]).filter((d) => !(ritmoKey === CURRENT_MONTH_KEY && Math.abs(d - ritmo.cur.length) <= 2)).map((d) => (
                         <text key={d} x={ritmo.sx(d)} y={ritmo.H - 9} textAnchor="middle" style={{ fontFamily: FONT, fontSize: 10.5, fill: PALETTE.inkSoft }}>{d}</text>
                       ))}
                       {ritmo.bandPath && <path d={ritmo.bandPath} fill={PALETTE.income} opacity="0.1" />}
@@ -2159,16 +2167,18 @@ export default function App() {
                       {ritmo.prevPath && <path d={ritmo.prevPath} fill="none" stroke={PALETTE.inkSoft} strokeWidth="1.8" opacity="0.8" strokeLinejoin="round" />}
                       {ritmo.projPath && <path d={ritmo.projPath} fill="none" stroke={PALETTE.income} strokeWidth="3" strokeDasharray="2 6" strokeLinecap="round" opacity="0.85" />}
                       <path d={ritmo.curPath} fill="none" stroke={PALETTE.income} strokeWidth="3.4" strokeLinejoin="round" strokeLinecap="round" />
-                      <circle cx={ritmo.sx(ritmo.cur.length)} cy={ritmo.sy(ritmo.cur[ritmo.cur.length - 1])} r="4.6" fill={PALETTE.paper} stroke={PALETTE.income} strokeWidth="2.4" />
                       {ritmoKey === CURRENT_MONTH_KEY && (
-                        <text x={ritmo.sx(ritmo.cur.length) + 8} y={ritmo.sy(ritmo.cur[ritmo.cur.length - 1]) - 8} style={{ fontFamily: FONT, fontSize: 10.5, fontWeight: 800, fill: PALETTE.income, stroke: PALETTE.paper, strokeWidth: 5, paintOrder: "stroke", strokeLinejoin: "round" }}>hoy</text>
-                      )}
-                      {ritmo.projPath && (
                         <>
-                          <circle cx={ritmo.sx(ritmo.projLastDay)} cy={ritmo.sy(ritmo.projEnd)} r="4.4" fill={PALETTE.paper} stroke={PALETTE.income} strokeWidth="2.2" strokeDasharray="2 2" />
-                          <text x={ritmo.sx(ritmo.projLastDay) - 8} y={ritmo.sy(ritmo.projEnd) - 10} textAnchor="end" style={{ fontFamily: FONT, fontSize: 11, fontWeight: 800, fill: PALETTE.income, stroke: PALETTE.paper, strokeWidth: 5, paintOrder: "stroke", strokeLinejoin: "round" }}>≈ {ritmo.projEnd >= 0 ? "+" : ""}{formatMoneyRound(ritmo.projEnd)}</text>
+                          <line x1={ritmo.sx(ritmo.cur.length)} x2={ritmo.sx(ritmo.cur.length)} y1={ritmo.sy(ritmo.cur[ritmo.cur.length - 1])} y2={ritmo.H - ritmo.MB} stroke={PALETTE.income} strokeWidth="1.4" strokeDasharray="3 3" opacity="0.7" />
+                          <rect x={ritmo.sx(ritmo.cur.length) - 17} y={ritmo.H - ritmo.MB + 4} width="34" height="17" rx="8.5" fill={PALETTE.income} />
+                          <text x={ritmo.sx(ritmo.cur.length)} y={ritmo.H - ritmo.MB + 16} textAnchor="middle" style={{ fontFamily: FONT, fontSize: 10.5, fontWeight: 800, fill: PALETTE.paper }}>hoy</text>
                         </>
                       )}
+                      <circle cx={ritmo.sx(ritmo.cur.length)} cy={ritmo.sy(ritmo.cur[ritmo.cur.length - 1])} r="5" fill={PALETTE.income} stroke={PALETTE.paper} strokeWidth="2" />
+                      {ritmo.endLabels.map((l) => (
+                        <text key={l.k} x={ritmo.W - ritmo.MR + 8} y={l.y + 3.5} style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: l.w, fill: l.c }}>{l.t}</text>
+                      ))}
+                      {ritmo.projPath && <circle cx={ritmo.sx(ritmo.projLastDay)} cy={ritmo.sy(ritmo.projEnd)} r="4.4" fill={PALETTE.paper} stroke={PALETTE.income} strokeWidth="2.2" strokeDasharray="2 2" />}
                       {ritmoDay && (
                         <g>
                           <line x1={ritmo.sx(ritmo.day)} x2={ritmo.sx(ritmo.day)} y1={ritmo.MT} y2={ritmo.H - ritmo.MB} stroke={PALETTE.inkSoft} strokeDasharray="3 3" opacity="0.6" />
